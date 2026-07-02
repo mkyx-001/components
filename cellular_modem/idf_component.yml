@@ -1,5 +1,5 @@
 description: USB RNDIS cellular modem driver (AT control + RNDIS data plane)
-version: 1.0.0
+version: 1.0.1
 license: Apache-2.0
 url: https://github.com/mkyx-001/components/tree/main/cellular_modem
 repository: https://github.com/mkyx-001/components.git
