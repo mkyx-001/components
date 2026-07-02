@@ -1,0 +1,36 @@
+menu "Performeter"
+    config PERFORMETER_ENABLE
+        bool "Enable Performeter background task by default"
+        default y
+        help
+            Whether the Performeter background sampling task is enabled at build
+            time. Disable to strip out the monitor entirely (saves flash/RAM).
+
+    config PERFORMETER_PERIOD_MS
+        int "Default sampling period (ms)"
+        default 1000
+        range 200 5000
+        help
+            Interval between two performance snapshots. Longer windows give
+            smoother numbers but slower response. Recommended 200-5000 ms.
+
+    config PERFORMETER_LOG_TASKS_TOPN
+        int "Top-N CPU tasks to log per sample"
+        default 8
+        range 1 32
+        help
+            How many of the most CPU-consuming tasks to print each cycle.
+
+    config PERFORMETER_TASK_STACK
+        int "Background task stack size (bytes)"
+        default 4096
+        help
+            Stack allocated for the Performeter background task.
+
+    config PERFORMETER_LOG_LEVEL_OVERRIDE
+        int "Performeter log level (0=none,5=verbose)"
+        default 0
+        range 0 5
+        help
+            0 = follow global LOG_DEFAULT_LEVEL; otherwise force this level.
+endmenu

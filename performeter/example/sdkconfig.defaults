@@ -1,0 +1,27 @@
+# Performeter example 工程默认配置
+# 这些键在首次 idf.py build 时会被写入 sdkconfig，保证开箱可用。
+# 详见 DESIGN.md §2.3。
+
+# ===== FreeRTOS 运行时统计（performeter 的硬性前置）=====
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS=y
+
+# 使用 esp_timer 作为 run-time stats 时基（IDF v5 默认即此，显式写明以防被覆盖）。
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS_USING_ESP_TIMER=y
+
+# ===== Performeter 组件默认 =====
+CONFIG_PERFORMETER_ENABLE=y
+CONFIG_PERFORMETER_PERIOD_MS=1000
+CONFIG_PERFORMETER_LOG_TASKS_TOPN=8
+CONFIG_PERFORMETER_TASK_STACK=4096
+
+# ===== Task Watchdog (TWDT) =====
+# 本 example 不创建任何负载任务，IDLE 任务正常运行并喂狗，无需调整 TWDT。
+# 保持 IDF 默认即可。若你在自己的工程里加入长时间不让出的负载任务，
+# 需在该任务内调用 esp_task_wdt_reset() 主动喂狗。
+CONFIG_ESP_TASK_WDT=y
+
+# ===== 串口日志级别 =====
+# 默认 INFO 足以看到 performeter 的周期输出。
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y

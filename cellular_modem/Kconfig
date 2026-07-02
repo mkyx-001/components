@@ -1,0 +1,9 @@
+menu "Cellular Modem (USB RNDIS)"
+
+    config CELL_MODEM_DEFAULT_APN
+        string "Fallback APN when PLMN unknown"
+        default "3gnet"
+        help
+            IMSI/COPS 无法识别运营商时使用的默认 APN。
+
+endmenu

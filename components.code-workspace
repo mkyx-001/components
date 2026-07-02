@@ -1,0 +1,20 @@
+{
+	"name": "🧩 组件开发工作区",
+	"folders": [
+		{
+			"name": "📦 组件总览",
+			"path": "."
+		},
+		{
+			"name": "📡 蜂窝模组",
+			"path": "cellular_modem"
+		},
+		{
+			"name": "📈 性能仪表",
+			"path": "performeter"
+		}
+	],
+	"settings": {
+		"window.title": "🧩 组件开发工作区"
+	}
+}

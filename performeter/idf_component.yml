@@ -1,0 +1,14 @@
+## ESP-IDF Performance Monitor Component
+## https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-guides/tools/idf-component-manager.html
+version: "0.1.0"
+targets:
+  - esp32
+  - esp32s2
+  - esp32s3
+  - esp32c2
+  - esp32c3
+  - esp32c6
+# 单核 SoC（esp32c3/c6 等）core_util[1] 将恒为 0 且无 IDLE1。
+dependencies:
+  idf:
+    version: ">=5.0"
