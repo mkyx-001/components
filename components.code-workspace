@@ -2,19 +2,24 @@
 	"name": "🧩 组件开发工作区",
 	"folders": [
 		{
-			"name": "📦 组件总览",
+			"name": "📦 总览",
 			"path": "."
 		},
 		{
-			"name": "📡 蜂窝模组",
-			"path": "cellular_modem"
+			"name": "📚 组件库",
+			"path": "packages"
 		},
 		{
-			"name": "📈 性能仪表",
-			"path": "performeter"
+			"name": "📡 蜂窝例程",
+			"path": "examples/cellular_modem_basic"
+		},
+		{
+			"name": "📈 性能例程",
+			"path": "examples/performeter_demo"
 		}
 	],
 	"settings": {
-		"window.title": "🧩 组件开发工作区"
+		"window.title": "🧩 组件开发工作区",
+		"idf.currentSetup": "C:\\esp\\v6.0.1\\esp-idf"
 	}
 }

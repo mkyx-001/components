@@ -82,18 +82,19 @@ void app_main(void)
 
 ## 例程
 
-仓库内提供最小可运行例程：
-- `examples/basic`
+仓库根目录提供最小可运行例程：
+
+- `examples/cellular_modem_basic`
 
 运行方式：
 
 ```bash
-cd examples/basic
+cd examples/cellular_modem_basic
 idf.py set-target esp32p4
 idf.py build flash monitor
 ```
 
-如你的复位引脚不是 GPIO22，可在 `examples/basic/main/main.c` 中修改
+如你的复位引脚不是 GPIO22，可在 `examples/cellular_modem_basic/main/main.c` 中修改
 `CELL_MODEM_RST_GPIO`。
 
 ## 主要 API

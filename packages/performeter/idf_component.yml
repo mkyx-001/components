@@ -1,10 +1,10 @@
 description: ESP32 performance monitor based on FreeRTOS run-time stats (CPU, tasks, heap/stack)
 version: "0.1.0"
 license: Apache-2.0
-url: https://github.com/mkyx-001/components/tree/main/performeter
+url: https://github.com/mkyx-001/components/tree/main/packages/performeter
 repository: https://github.com/mkyx-001/components.git
 repository_info:
-  path: performeter
+  path: packages/performeter
 targets:
   - esp32
   - esp32s2

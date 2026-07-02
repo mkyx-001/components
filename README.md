@@ -8,8 +8,8 @@ ESP-IDF 可复用组件集合，用于集中维护、开发与发布自研 manag
 
 | 组件 | 说明 | 文档 |
 |:---:|:---|:---|
-| 📡 [`cellular_modem`](./cellular_modem/) | USB RNDIS 蜂窝模组驱动（AT 控制面 + RNDIS 数据面，面向 ESP32-P4 等 USB Host 场景） | 📖 [README](./cellular_modem/README.md) |
-| 📈 [`performeter`](./performeter/) | 基于 FreeRTOS run-time stats 的性能监视器（CPU 利用率、任务排行、堆/栈水位） | 📖 [README](./performeter/README.md) · 📝 [DESIGN](./performeter/DESIGN.md) |
+| 📡 [`cellular_modem`](./packages/cellular_modem/) | USB RNDIS 蜂窝模组驱动（AT 控制面 + RNDIS 数据面，面向 ESP32-P4 等 USB Host 场景） | 📖 [README](./packages/cellular_modem/README.md) |
+| 📈 [`performeter`](./packages/performeter/) | 基于 FreeRTOS run-time stats 的性能监视器（CPU 利用率、任务排行、堆/栈水位） | 📖 [README](./packages/performeter/README.md) · 📝 [DESIGN](./packages/performeter/DESIGN.md) |
 
 ---
 
@@ -19,15 +19,15 @@ ESP-IDF 可复用组件集合，用于集中维护、开发与发布自研 manag
 components/
 ├── 📄 README.md
 ├── 🗂️  components.code-workspace   # VS Code / Cursor 多根工作区
-├── 📡 cellular_modem/               # 蜂窝模组组件
-│   ├── examples/basic/              # 最小例程
-│   └── ...
-└── 📈 performeter/                  # 性能监视器组件
-    ├── example/                     # 测试工程
-    └── ...
+├── packages/
+│   ├── 📡 cellular_modem/          # 蜂窝模组组件（库）
+│   └── 📈 performeter/             # 性能监视器组件（库）
+└── examples/
+    ├── cellular_modem_basic/       # cellular_modem 最小例程
+    └── performeter_demo/           # performeter 演示工程
 ```
 
-> 💡 推荐用 `components.code-workspace` 打开本仓库，可同时浏览总览与各子组件目录。
+> 💡 推荐用 `components.code-workspace` 打开本仓库，可同时浏览总览、组件包与示例工程。
 
 ---
 
@@ -40,9 +40,9 @@ components/
 ```yaml
 dependencies:
   cellular_modem:
-    path: ../components/cellular_modem
+    path: ../components/packages/cellular_modem
   performeter:
-    path: ../components/performeter
+    path: ../components/packages/performeter
 ```
 
 路径按你的目录布局调整即可。
@@ -58,13 +58,14 @@ dependencies:
 
 ### 🧪 方式 C — 同仓库内的 example 工程
 
-在 example 顶层 `CMakeLists.txt` 中把父目录设为额外组件目录：
+在 example 顶层 `CMakeLists.txt` 中把 `packages/` 设为额外组件目录，例如：
 
 ```cmake
-set(EXTRA_COMPONENT_DIRS "../")
+set(EXTRA_COMPONENT_DIRS "../../packages/cellular_modem")
+# 或 performeter: set(EXTRA_COMPONENT_DIRS "../../packages/performeter")
 ```
 
-`performeter/example` 即采用此方式。
+`examples/cellular_modem_basic` 与 `examples/performeter_demo` 即采用此方式。
 
 ---
 
@@ -81,12 +82,12 @@ set(EXTRA_COMPONENT_DIRS "../")
 
 ```bash
 # 📡 cellular_modem 例程
-cd cellular_modem/examples/basic
+cd examples/cellular_modem_basic
 idf.py set-target esp32p4
 idf.py build flash monitor
 
 # 📈 performeter 例程
-cd performeter/example
+cd examples/performeter_demo
 idf.py set-target esp32
 idf.py build flash monitor
 ```
@@ -96,3 +97,5 @@ idf.py build flash monitor
 ## 📄 许可证
 
 各组件均采用 Apache-2.0，详见各目录下的 `LICENSE`。
+
+---
