@@ -1,0 +1,24 @@
+dependencies:
+  idf:
+    source:
+      type: idf
+    version: 6.0.1
+  sergeykharenko/ch182:
+    component_hash: 4c44386451dbb2a6565462da21fb9ada250140ff4f3f5ab26625374c37af76dd
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.1'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    targets:
+    - esp32
+    - esp32p4
+    version: 0.0.1
+direct_dependencies:
+- idf
+- sergeykharenko/ch182
+manifest_hash: b282e9e01baa04825826d96947bdb77d46bb67b89174edb136d904330507b473
+target: esp32p4
+version: 3.0.0
