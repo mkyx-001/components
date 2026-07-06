@@ -38,7 +38,7 @@ cellular_modem/
 
 ```yaml
 dependencies:
-  mkyx-001/cellular_modem: "^1.0.0"
+  mkyx-001/cellular_modem: "^1.1.0"
 ```
 
 ### 2) 初始化与拨号
@@ -108,6 +108,7 @@ idf.py build flash monitor
 - `cell_modem_wait_for_pdp_ready()`: 阻塞等待就绪
 - `cell_modem_register_status_callback()`: 注册状态回调
 - `cell_modem_get_signal_strength()`: 获取 CSQ 信号值
+- `cell_modem_is_data_path_ok()`: 数据面是否已验证可达（TCP/ICMP 探针通过，区别于 `is_pdp_ready()` 的 AT 拨号成功）
 
 详细类型与注释见 `include/cellular_modem.h`。
 
@@ -130,6 +131,17 @@ idf.py build flash monitor
 - RNDIS 有 IP 但业务不通：
   - 打开 `enable_diag`
   - 配置 `diag_tcp_host` 验证业务目标连通性
+  - 用 `cell_modem_is_data_path_ok()` 判断真实上下行可达（区别于 `cell_modem_is_pdp_ready()`）
+
+## 已知限制（Known Limitations）
+
+- **SIM 卡热插拔检测仅复合模式支持**
+  - `auto_configure_rndis=false`（复合模式，RNDIS + AT CDC 共存）时，monitor 任务会周期发 `AT+CPIN?` 复检 SIM 在位状态，连续 3 次失败才认定 SIM 丢失（避免小区切换瞬态误报）。
+  - `auto_configure_rndis=true`（纯 RNDIS 模式）时，模式切换后 AT CDC 接口消失，CPIN 与 CSQ 周期查询均不可用。此模式下 SIM 拔插需通过硬复位或上电重启感知。
+- **信号丢失但 RNDIS 链路未断时的自愈**
+  - 数据面诊断（`enable_diag=true` + `diag_tcp_host` 配置）启用后，diag 任务会在首次通过后以 60s 周期复查数据面；复查失败时降级状态并触发 4G 看门狗硬复位，信号恢复后自动重拨。
+  - 未启用数据面诊断时，信号差但 RNDIS 链路未断且 DHCP 租约仍存的场景下，组件无法感知数据面失效，需外部重启或开启诊断。
+- **看门狗触发硬复位会断开当前所有 TCP 连接**：30s 无连接即复位模组，量产场景需评估上层业务的断连重连能力。
 
 ## 版本发布建议
 

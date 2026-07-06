@@ -121,6 +121,16 @@ bool cell_modem_is_connected(void);
 bool cell_modem_is_pdp_ready(void);
 
 /**
+ * @brief 数据面是否已验证可用（TCP 云探针或 ICMP ping 通过）
+ *
+ * 与 cell_modem_is_pdp_ready() 的区别：后者只确认 AT 拨号成功，
+ * 本函数确认真实上下行可达（DNS 解析 + TCP 连云或 ICMP 收到回包）。
+ * 需在 cell_modem_config_t 中启用 enable_diag 并配置 diag_tcp_host
+ * 才会触发探针；未启用诊断时本函数恒为 false。
+ */
+bool cell_modem_is_data_path_ok(void);
+
+/**
  * @brief 阻塞等待蜂窝数据就绪
  * @param timeout_ms 最大等待毫秒；0=无限等待
  * @return true 就绪；false 超时（仅 timeout_ms>0）
