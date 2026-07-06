@@ -1,0 +1,13 @@
+description: CH182D Ethernet driver (ESP32-P4 internal EMAC + CH182D PHY, RMII)
+version: 0.1.0
+license: Apache-2.0
+url: https://github.com/mkyx-001/components/tree/main/packages/eth_ch182d
+repository: https://github.com/mkyx-001/components.git
+repository_info:
+  path: packages/eth_ch182d
+targets:
+  - esp32p4
+dependencies:
+  idf:
+    version: '>=5.0'
+  sergeykharenko/ch182: ~0.0.1

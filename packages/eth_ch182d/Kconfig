@@ -1,0 +1,26 @@
+menu "CH182D Ethernet"
+
+    config ETH_CH182D_USE_STATIC_IP
+        bool "Boot with static IP instead of DHCP"
+        default n
+        help
+            默认 n：启动后立即 DHCP。
+            选 y 后，可在下方填写静态 IP/掩码/网关；运行时仍可用
+            eth_ch182d_enable_dhcp() 切回 DHCP。
+
+    config ETH_CH182D_STATIC_IP
+        string "Static IP address"
+        default "192.168.1.100"
+        depends on ETH_CH182D_USE_STATIC_IP
+
+    config ETH_CH182D_STATIC_NETMASK
+        string "Static netmask"
+        default "255.255.255.0"
+        depends on ETH_CH182D_USE_STATIC_IP
+
+    config ETH_CH182D_STATIC_GATEWAY
+        string "Static gateway"
+        default "192.168.1.1"
+        depends on ETH_CH182D_USE_STATIC_IP
+
+endmenu

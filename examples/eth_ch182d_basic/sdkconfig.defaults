@@ -1,0 +1,18 @@
+# eth_ch182d_basic example 工程默认配置
+# 这些键在首次 idf.py build 时会被写入 sdkconfig，保证开箱可用。
+
+# ===== 以太网（ESP32-P4 内置 EMAC）=====
+# 启用内部 EMAC + eth 驱动；REFCLK 由 CH182D 外部输入（组件内固定 EXT_IN）。
+CONFIG_ETH_ENABLED=y
+
+# ===== 例程默认走 DHCP（如需静态 IP 见下方注释）=====
+# CONFIG_ETH_CH182D_USE_STATIC_IP=y
+# CONFIG_ETH_CH182D_STATIC_IP="192.168.1.100"
+# CONFIG_ETH_CH182D_STATIC_NETMASK="255.255.255.0"
+# CONFIG_ETH_CH182D_STATIC_GATEWAY="192.168.1.1"
+
+# ===== lwIP：允许运行时切静态 IP（dhcp client + 静态配置共存）=====
+CONFIG_LWIP_DHCP_DOES_ARP_CHECK=n
+
+# ===== 串口日志级别 =====
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
