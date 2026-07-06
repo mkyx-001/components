@@ -54,17 +54,16 @@ static const char *TAG = "cell_modem";
 #define CELL_MODEM_BOOT_MATREADY_MS      60000
 #define CELL_MODEM_BOOT_CPIN_TIMEOUT_MS  5000
 #define CELL_MODEM_BOOT_CPIN_RETRIES     3
-#define CELL_MODEM_BOOT_CEREG_MS         120000
-#define CELL_MODEM_BOOT_CEREG_POLL_MS    2000
-#define CELL_MODEM_BOOT_CEREG_KICK_MS    15000   /* stat=0 持续此时长后 CFUN/COPS 踢搜网 */
-#define CELL_MODEM_BOOT_CSQ_WAIT_MS      30000   /* CPIN/CFUN 后等 CSQ；配合 early COPS */
-#define CELL_MODEM_BOOT_CSQ_COPS_KICK_MS 15000  /* CSQ 99,99 持续此时长后提前 COPS=0 */
-#define CELL_MODEM_BOOT_CEREG_DIAL_BYPASS_MS 30000 /* kick 后 CSQ 有效但 stat=0 满此时长 → 试 MDIALUP */
 #define CELL_MODEM_BOOT_CEREG_HW_RESET_MAX 2     /* CEREG 超时后硬复位重试次数（单次上电） */
+#define CELL_MODEM_DIAL_MIPCALL_MS       15000   /* MIPCALL=1,1：实测 2s 内出 URC，5s 余量 */
 #define CELL_MODEM_DIAL_MDIALUP_MS       30000
-/* CGATT/CGACT 兜底（仅 MDIALUP 主路径失败时） */
-#define CELL_MODEM_CGATT_TIMEOUT_MS      45000
-#define CELL_MODEM_CGATT_RETRY_COUNT     2
+/* CGATT/CGACT 兜底（仅 MIPCALL+MDIALUP 主路径都失败时） */
+#define CELL_MODEM_CGATT_TIMEOUT_MS      20000   /* 原 45s×2 过长；20s 一次，避免多花时间在信号/卡问题上 */
+#define CELL_MODEM_CGATT_RETRY_COUNT     1
+/* ① CEREG 驻网轮询（拨号前置条件，见 ml307-at-boot-sequence.md §4a） */
+#define CELL_MODEM_BOOT_CEREG_POLL_MS    2000    /* 轮询间隔 */
+#define CELL_MODEM_BOOT_CEREG_TOTAL_MS   60000   /* 总超时：stat=1/5 即成功；实测 ML307 5-15s 驻网 */
+#define CELL_MODEM_BOOT_CEREG_KICK_MS    15000   /* stat=0 持续 15s 不动则发 CFUN=1+COPS=0 */
 
 /* APN：config.apn 为空时按 IMSI/COPS 自动匹配；未知 PLMN 兜底 */
 #define CELL_MODEM_APN_BUF_SIZE          32
@@ -73,7 +72,8 @@ static const char *TAG = "cell_modem";
 /* P3 蜂窝数据面诊断（pdp_done 后、绑定 modem netif，周期重试，仅日志） */
 #define CELL_MODEM_DIAG_PING_DOMAIN      "www.baidu.com"  /* DNS + ICMP（解析后 IP） */
 #define CELL_MODEM_DIAG_PING_COUNT       3
-#define CELL_MODEM_DIAG_RETRY_MS         30000            /* 每轮间隔 */
+#define CELL_MODEM_DIAG_RETRY_MS         30000            /* 首次未通过时的快速重试间隔 */
+#define CELL_MODEM_DIAG_REVERIFY_MS      60000            /* 通过后的慢速周期复查间隔 */
 #define CELL_MODEM_DIAG_TCP_TIMEOUT_MS   5000
 #define CELL_MODEM_DIAG_TCP_PORT         443              /* 云/OTA 同域 HTTPS */
 
@@ -197,6 +197,12 @@ static bool s_early_reset_done = false;
 /** CEREG 超时后已执行的硬复位次数（pdp_done 成功后清零） */
 static int s_cereg_hw_reset_count = 0;
 
+/* SIM 在位状态轮询：CPIN 仅 boot 时查一次，运行期靠 monitor 周期复检。
+ * 连续失败阈值避免小区切换/RF 瞬态导致的误报；任意一次 READY 立即清零。 */
+#define CELL_MODEM_CPIN_FAIL_THRESHOLD  3
+static int s_cpin_fail_count = 0;
+static bool s_sim_present = true;       /* boot CPIN 通过即 true；运行期检测到丢失置 false */
+
 /* 前向声明 */
 static void cell_modem_update_state(cell_modem_state_t new_state);
 static void cell_modem_close_at_port(void);
@@ -248,66 +254,33 @@ static bool cell_modem_parse_csq_response(const char *response, int *csq_out)
     return false;
 }
 
-/** 查询 CSQ 一次（不阻塞等待 RF） */
-static int cell_modem_query_csq_once(void)
-{
-    char response[128];
-
-    memset(response, 0, sizeof(response));
-    if (cell_modem_at_send("AT+CSQ", response, sizeof(response), 5000) != ESP_OK) {
-        return -1;
-    }
-    int csq = -1;
-    if (cell_modem_parse_csq_response(response, &csq)) {
-        return csq;
-    }
-    return -1;
-}
-
-/**
- * CPIN/CFUN 后等待 CSQ 进入 0–31；CSQ 长期 99,99 时提前 COPS=0（日志显示 kick 后才出信号）。
+/** CPIN 通过后启用 CEREG URC 上报（不干预 RF 状态）。
+ *
+ * 关键：不要发 AT+CFUN=1。模组默认 boot 后即 CFUN=1（RF 开），
+ * 再发一次 CFUN=1 会触发 RF 子系统重新初始化，冷启动时耗时 30-159 秒，
+ * 期间 CSQ=99、CEREG stat=0（RF 接收机未工作）。
+ * 旧代码（refactor 867cc64 前）不发 CFUN=1，模组 2-5 秒就有 CSQ、5-15 秒驻网。
+ * 同理不发 AT+COPS=0——模组默认自动搜网，COPS=0 在 RF 未就绪时发送也无用。
  */
-static int cell_modem_wait_csq_ready(void)
-{
-    char response[256];
-    TickType_t start = xTaskGetTickCount();
-    bool cops_kick_done = false;
-
-    while ((xTaskGetTickCount() - start) < pdMS_TO_TICKS(CELL_MODEM_BOOT_CSQ_WAIT_MS)) {
-        int csq = cell_modem_query_csq_once();
-        if (csq >= 0) {
-            uint32_t waited_s = (uint32_t)((xTaskGetTickCount() - start) *
-                                           portTICK_PERIOD_MS / 1000);
-            ESP_LOGI(TAG, "boot: CSQ=%d ready, waited %lus", csq, (unsigned long)waited_s);
-            return csq;
-        }
-        uint32_t waited_ms = (uint32_t)((xTaskGetTickCount() - start) * portTICK_PERIOD_MS);
-        if (!cops_kick_done && waited_ms >= CELL_MODEM_BOOT_CSQ_COPS_KICK_MS) {
-            ESP_LOGW(TAG, "boot: CSQ still invalid, early COPS=0...");
-            (void)cell_modem_at_send("AT+COPS=0", response, sizeof(response), 45000);
-            cops_kick_done = true;
-        }
-        vTaskDelay(pdMS_TO_TICKS(2000));
-    }
-    ESP_LOGW(TAG, "boot: CSQ wait timeout (%ds), continue CEREG",
-             CELL_MODEM_BOOT_CSQ_WAIT_MS / 1000);
-    return -1;
-}
-
-/** CPIN 通过后立即开射频，并启用 CEREG URC 上报（若模组支持） */
+static void cell_modem_boot_log_rf_diag(void); /* 前置声明：定义在本函数下方 */
 static void cell_modem_boot_enable_rf(void)
 {
     char response[256];
 
-    ESP_LOGI(TAG, "boot: enabling RF (CFUN=1)...");
-    if (cell_modem_at_send("AT+CFUN=1", response, sizeof(response), 15000) != ESP_OK) {
-        ESP_LOGW(TAG, "boot: CFUN=1 failed or timeout");
-    }
-    vTaskDelay(pdMS_TO_TICKS(1000));
+    /* 仅启用 CEREG URC 上报，用于被动接收注册状态变化。
+     * 不发 CFUN=1、不发 COPS=0——让模组按默认流程自行初始化 RF 和搜网。 */
+    ESP_LOGI(TAG, "boot: enabling CEREG URC (not touching RF — module auto-registers by default)");
     (void)cell_modem_at_send("AT+CEREG=2", response, sizeof(response), 3000);
+
+    /* 诊断基线：CPIN 之下立刻打一次 RF 全状态，确认模组启动后是否真为默认 CFUN=1。
+     * 早期 reset 后偶发会进入非默认状态（CFUN=0 / 飞行模式）时，此处可第一时间暴露，
+     * 避免后续 CSQ 99、CEREG stat=0 时无法区分「RF 关断」vs「无信号」。 */
+    cell_modem_boot_log_rf_diag();
 }
 
-/** kick 后打印 CFUN? / CEREG? / CSQ 便于区分 RF 关断 vs 无信号 */
+/** 打印 CFUN? / CEREG? / COPS? / CSQ 全状态，用于区分 RF 关断 vs 无信号 vs COPS 异常。
+ * 顺便解析 CSQ 回写 g.csq_value，使 boot_info 日志和心跳 sig 字段拿到真实值
+ * （boot 跳过 CSQ 等待后，info->csq 仅靠此处填充）。 */
 static void cell_modem_boot_log_rf_diag(void)
 {
     char response[256];
@@ -316,25 +289,13 @@ static void cell_modem_boot_log_rf_diag(void)
     (void)cell_modem_at_send("AT+CFUN?", response, sizeof(response), 5000);
     (void)cell_modem_at_send("AT+CEREG?", response, sizeof(response), 5000);
     (void)cell_modem_at_send("AT+COPS?", response, sizeof(response), 5000);
-    (void)cell_modem_at_send("AT+CSQ", response, sizeof(response), 5000);
-}
-
-/**
- * CEREG 长期 stat=0 时 COPS 自动选网；CFUN=1 已在 CPIN 后执行过，此处再确认一次。
- */
-static void cell_modem_boot_kick_registration(void)
-{
-    char response[256];
-
-    ESP_LOGW(TAG, "boot: CEREG stat=0 stuck, kick search (CFUN=1, COPS=0)...");
-    if (cell_modem_at_send("AT+CFUN=1", response, sizeof(response), 15000) != ESP_OK) {
-        ESP_LOGW(TAG, "boot: CFUN=1 no OK (continuing)");
+    memset(response, 0, sizeof(response));
+    if (cell_modem_at_send("AT+CSQ", response, sizeof(response), 5000) == ESP_OK) {
+        int csq = -1;
+        if (cell_modem_parse_csq_response(response, &csq) && csq >= 0) {
+            g.csq_value = csq;
+        }
     }
-    vTaskDelay(pdMS_TO_TICKS(2000));
-    if (cell_modem_at_send("AT+COPS=0", response, sizeof(response), 45000) != ESP_OK) {
-        ESP_LOGW(TAG, "boot: COPS=0 no OK (may still be searching)");
-    }
-    cell_modem_boot_log_rf_diag();
 }
 
 /* ================================================================
@@ -663,6 +624,12 @@ static esp_err_t cell_modem_at_send_collect(const char *cmd, char *response, siz
 
     /* MDIALUP 等 URC 可能在 OK 之后到达 */
     if (required_substr != NULL && strstr(response, required_substr) == NULL) {
+        /* 响应已含 ERROR/CME ERROR 时不必再等 URC，省 ~20s 超时
+         *（MDIALUP=1,1 在 PDP 已激活时回 +CME ERROR: 3 即此情形） */
+        if (strstr(response, "ERROR") != NULL) {
+            ESP_LOGW(TAG, "AT collect failed: %s → %s", cmd, response);
+            return ESP_FAIL;
+        }
         size_t before = strlen(response);
         cell_modem_at_read_more(response, resp_len, timeout_ms / 2 + 5000);
         if (strlen(response) > before) {
@@ -681,25 +648,6 @@ static esp_err_t cell_modem_at_send_collect(const char *cmd, char *response, siz
         return ESP_FAIL;
     }
     return ESP_OK;
-}
-
-/** 解析 +CEREG: n,stat 中的 stat */
-static int cell_modem_parse_cereg_stat(const char *response)
-{
-    const char *p = strstr(response, "+CEREG:");
-    if (p == NULL) {
-        return -1;
-    }
-    p += 7;
-    p = strchr(p, ',');
-    if (p == NULL) {
-        return -1;
-    }
-    p++;
-    while (*p == ' ') {
-        p++;
-    }
-    return atoi(p);
 }
 
 /** 解析 +COPS: 0,2,"46000",7 的 PLMN 与 act */
@@ -736,20 +684,26 @@ static bool cell_modem_is_valid_cellular_ipv4(const char *ipv4)
     return dots == 3;
 }
 
-/** 从响应中提取 +MDIALUP: 行内的蜂窝 IPv4（取首个有效 IPv4 引号字段） */
-static bool cell_modem_parse_mdialup_ipv4(const char *resp, char *ipv4_out, size_t ipv4_len)
+/** 从响应中提取指定 URC 标记（如 "+MDIALUP:" / "+MIPCALL:"）行内的首个有效 IPv4。
+ * 复用于 MDIALUP 和 MIPCALL 拨号响应解析——两者 URC 格式相同：
+ *   +XXX: <cid>,<state>,"<ipv4>"[,"<ipv6>"]
+ * @param marker 须含冒号，如 "+MDIALUP:" / "+MIPCALL:"
+ * @return true 解析到有效 IPv4（非空、非 0.0.0.0、纯点分十进制） */
+static bool cell_modem_parse_urc_ipv4(const char *resp, const char *marker,
+                                      char *ipv4_out, size_t ipv4_len)
 {
+    size_t marker_len = strlen(marker);
     const char *p = resp;
-    while ((p = strstr(p, "+MDIALUP:")) != NULL) {
+    while ((p = strstr(p, marker)) != NULL) {
         const char *q1 = strchr(p, '"');
         if (q1 == NULL) {
-            p += 9;
+            p += marker_len;
             continue;
         }
         q1++;
         const char *q2 = strchr(q1, '"');
         if (q2 == NULL || (size_t)(q2 - q1) + 1 > ipv4_len) {
-            p += 9;
+            p += marker_len;
             continue;
         }
         size_t len = (size_t)(q2 - q1);
@@ -761,6 +715,18 @@ static bool cell_modem_parse_mdialup_ipv4(const char *resp, char *ipv4_out, size
         p = q2 + 1;
     }
     return false;
+}
+
+/** 从响应中提取 +MDIALUP: 行内的蜂窝 IPv4 */
+static bool cell_modem_parse_mdialup_ipv4(const char *resp, char *ipv4_out, size_t ipv4_len)
+{
+    return cell_modem_parse_urc_ipv4(resp, "+MDIALUP:", ipv4_out, ipv4_len);
+}
+
+/** 从响应中提取 +MIPCALL: 行内的蜂窝 IPv4 */
+static bool cell_modem_parse_mipcall_ipv4(const char *resp, char *ipv4_out, size_t ipv4_len)
+{
+    return cell_modem_parse_urc_ipv4(resp, "+MIPCALL:", ipv4_out, ipv4_len);
 }
 
 /* ================================================================
@@ -1197,7 +1163,7 @@ static const char *cell_modem_resolve_apn_for_dial(const cell_modem_boot_info_t 
 }
 
 /* ================================================================
- *  开机 AT 就绪 + RNDIS 拨号（MDIALUP 主路径）
+ *  开机 AT 就绪 + RNDIS 拨号（MIPCALL 主路径）
  * ================================================================ */
 
 /** ①~④：模组就绪 / SIM / 信息 / CEREG+COPS */
@@ -1256,10 +1222,15 @@ static esp_err_t cell_modem_at_boot_ready(cell_modem_boot_info_t *info_out)
                                       CELL_MODEM_BOOT_CPIN_TIMEOUT_MS);
         if (ret == ESP_OK && strstr(response, "READY") != NULL) {
             ESP_LOGI(TAG, "boot: CPIN READY");
+            s_sim_present = true;
+            s_cpin_fail_count = 0;
             break;
         }
         if (try + 1 >= CELL_MODEM_BOOT_CPIN_RETRIES) {
             ESP_LOGE(TAG, "boot: CPIN not READY: %s", response);
+            /* 标记 SIM 缺失：让 need_pdp_activation 在下一轮 monitor 被抑制，
+             * 看门狗就能正常触发硬复位，避免 AT 任务反复饿死看门狗。 */
+            s_sim_present = false;
             return ESP_ERR_INVALID_STATE;
         }
         vTaskDelay(pdMS_TO_TICKS(2000));
@@ -1267,6 +1238,11 @@ static esp_err_t cell_modem_at_boot_ready(cell_modem_boot_info_t *info_out)
 
     /* CPIN 后立即开射频，避免长期 stat=0 / CSQ 99,99 */
     cell_modem_boot_enable_rf();
+    /* enable_rf 内的 RF diag 已查询 CSQ 并回写 g.csq_value；同步到 info->csq
+     * 让 boot_info 日志显示真实值。 */
+    if (g.csq_value >= 0) {
+        info->csq = g.csq_value;
+    }
 
     /* ③ 模组信息（非阻断） */
     if (cell_modem_at_send("AT+CGSN=1", response, sizeof(response), 5000) == ESP_OK) {
@@ -1296,14 +1272,6 @@ static esp_err_t cell_modem_at_boot_ready(cell_modem_boot_info_t *info_out)
         }
     }
 
-    {
-        int csq = cell_modem_wait_csq_ready();
-        if (csq >= 0) {
-            info->csq = csq;
-            g.csq_value = csq;
-        }
-    }
-
     const char *apn_preview = cell_modem_resolve_apn_for_dial(info);
     const char *apn_tag = (g.config.apn != NULL && g.config.apn[0] != '\0') ? "forced" : "auto";
     ESP_LOGI(TAG, "boot info: CSQ=%d, IMEI=%s, ICCID=%s, IMSI=%s, APN=%s (%s)",
@@ -1312,81 +1280,71 @@ static esp_err_t cell_modem_at_boot_ready(cell_modem_boot_info_t *info_out)
              info->imsi_plmn[0] ? info->imsi_plmn : "?",
              apn_preview, apn_tag);
 
-    /* ④ LTE 注册 / 驻网（CEREG 轮询 + COPS 确认） */
+    /* ④ 网络注册轮询（CEREG?）——拨号前置条件
+     *
+     * 实测 ML307 开机后会主动搜网（非早期注释所述「不主动搜网」），通常
+     * 5-15s 内 CEREG stat 置 1（本地网）或 5（漫游）。等驻网后再拨号，
+     * MIPCALL/MDIALUP 首次成功率显著提升，避免进 CGATT 兜底链浪费时间。
+     *
+     * 轮询策略（见 ml307-at-boot-sequence.md §4a）：
+     *   - stat=1/5：驻网成功，进入拨号
+     *   - stat=0 持续 15s 不动：发 AT+CFUN=1 + AT+COPS=0 触发搜网
+     *   - 总超时 60s：超时时仍允许尝试拨号（RNDIS 可能已自动拨通），
+     *     但保留 ESP_ERR_TIMEOUT 便于上层触发硬复位重试。
+     */
+    ESP_LOGI(TAG, "boot: waiting for CEREG registration...");
     TickType_t cereg_start = xTaskGetTickCount();
-    bool cereg_ok = false;
-    bool cereg_kick_done = false;
-    TickType_t cereg_kick_tick = 0;
-    int last_cereg_stat = -1;
-    while ((xTaskGetTickCount() - cereg_start) < pdMS_TO_TICKS(CELL_MODEM_BOOT_CEREG_MS)) {
+    bool registered = false;
+    bool kicked_search = false;
+    TickType_t stat_zero_start = cereg_start;
+
+    while ((xTaskGetTickCount() - cereg_start) < pdMS_TO_TICKS(CELL_MODEM_BOOT_CEREG_TOTAL_MS)) {
         memset(response, 0, sizeof(response));
         if (cell_modem_at_send("AT+CEREG?", response, sizeof(response), 5000) == ESP_OK) {
-            int stat = cell_modem_parse_cereg_stat(response);
-            last_cereg_stat = stat;
+            /* +CEREG: <n>,<stat>[,...]：取前两个逗号分隔的整数为 n 和 stat */
+            int cereg_n = -1, stat = -1;
+            const char *cereg = strstr(response, "+CEREG:");
+            if (cereg != NULL) {
+                sscanf(cereg, "+CEREG: %d,%d", &cereg_n, &stat);
+            }
+
             if (stat == 1 || stat == 5) {
-                uint32_t waited_s = (uint32_t)((xTaskGetTickCount() - cereg_start) *
-                                               portTICK_PERIOD_MS / 1000);
-                ESP_LOGI(TAG, "boot: CEREG stat=%d (%s), waited %lus",
-                         stat, stat == 5 ? "roaming" : "home", (unsigned long)waited_s);
-                cereg_ok = true;
+                uint32_t waited_ms = (uint32_t)((xTaskGetTickCount() - cereg_start) * portTICK_PERIOD_MS);
+                ESP_LOGI(TAG, "boot: CEREG stat=%d (%s), waited %lums",
+                         stat, stat == 1 ? "home" : "roaming", (unsigned long)waited_ms);
+                registered = true;
                 break;
             }
-            if (stat == 0 && !cereg_kick_done) {
-                uint32_t waited_ms = (uint32_t)((xTaskGetTickCount() - cereg_start) *
-                                                portTICK_PERIOD_MS);
-                if (waited_ms >= CELL_MODEM_BOOT_CEREG_KICK_MS) {
-                    cell_modem_boot_kick_registration();
-                    cereg_kick_done = true;
-                    cereg_kick_tick = xTaskGetTickCount();
+            if (stat == 0) {
+                /* stat=0 持续 15s：发一次 CFUN=1 + COPS=0 */
+                if (!kicked_search &&
+                    (xTaskGetTickCount() - stat_zero_start) >= pdMS_TO_TICKS(CELL_MODEM_BOOT_CEREG_KICK_MS)) {
+                    ESP_LOGW(TAG, "boot: CEREG stat=0 stuck %ds, kick search (CFUN=1, COPS=0)",
+                             CELL_MODEM_BOOT_CEREG_KICK_MS / 1000);
+                    (void)cell_modem_at_send("AT+CFUN=1", response, sizeof(response), 5000);
+                    (void)cell_modem_at_send("AT+COPS=0", response, sizeof(response), 5000);
+                    kicked_search = true;
                 }
-            }
-            /* kick 后已有信号但 CEREG 仍 stat=0：不必等满 120s，交给 MDIALUP 探测 */
-            if (cereg_kick_done && cereg_kick_tick != 0 && stat == 0) {
-                int csq = cell_modem_query_csq_once();
-                if (csq >= 0) {
-                    info->csq = csq;
-                    g.csq_value = csq;
-                    uint32_t since_kick_ms = (uint32_t)((xTaskGetTickCount() - cereg_kick_tick) *
-                                                        portTICK_PERIOD_MS);
-                    if (since_kick_ms >= CELL_MODEM_BOOT_CEREG_DIAL_BYPASS_MS) {
-                        ESP_LOGW(TAG, "boot: CEREG stat=0 with CSQ=%d for %ds after kick, try MDIALUP",
-                                 csq, CELL_MODEM_BOOT_CEREG_DIAL_BYPASS_MS / 1000);
-                        cell_modem_boot_log_rf_diag();
-                        return ESP_ERR_TIMEOUT;
-                    }
-                }
-            }
-            if (stat >= 0 && stat <= 5 && stat != 1 && stat != 5) {
-                ESP_LOGI(TAG, "boot: CEREG waiting stat=%d", stat);
-            } else if (stat > 5) {
-                ESP_LOGW(TAG, "boot: CEREG unexpected stat=%d, keep polling", stat);
+            } else {
+                /* stat=2（搜网中）、3（拒绝）等：重置 stat=0 计时 */
+                stat_zero_start = xTaskGetTickCount();
             }
         }
         vTaskDelay(pdMS_TO_TICKS(CELL_MODEM_BOOT_CEREG_POLL_MS));
     }
-    if (!cereg_ok) {
-        ESP_LOGE(TAG, "boot: CEREG timeout (last stat=%d); check SIM/carrier (ICCID=%s)",
-                 last_cereg_stat, info->iccid[0] ? info->iccid : "?");
-        cell_modem_boot_log_rf_diag();
-        return ESP_ERR_TIMEOUT;
-    }
 
-    memset(response, 0, sizeof(response));
-    {
-        int act = -1;
-        if (cell_modem_query_cops_numeric(response, sizeof(response),
-                                     info->cops_plmn, sizeof(info->cops_plmn), &act) == ESP_OK) {
-            info->cops_act = act;
-            ESP_LOGI(TAG, "boot: COPS %s act=%d", info->cops_plmn, act);
-        } else {
-            ESP_LOGW(TAG, "boot: COPS not registered or non-numeric PLMN");
-        }
+    if (!registered) {
+        ESP_LOGW(TAG, "boot: CEREG not registered after %ds, attempting dial anyway "
+                      "(RNDIS may have auto-dialed)", CELL_MODEM_BOOT_CEREG_TOTAL_MS / 1000);
+        /* 不直接返回失败：实测模组可能已通过 RNDIS 自动拨号，
+         * 由 cell_modem_rndis_dial 中的 MIPCALL? / MDIALUP? 查询兜底确认。
+         * 返回 TIMEOUT 让 at_config_task 在拨号也失败时触发硬复位重试。 */
     }
 
     return ESP_OK;
 }
 
-/** CGATT/CGACT 兜底路径（MDIALUP 主路径失败时） */
+/** CGATT/CGACT 兜底路径（MIPCALL+MDIALUP 主路径都失败时） */
 static esp_err_t cell_modem_dial_fallback_cgatt(char *ipv4_out, size_t ipv4_len)
 {
     char response[384];
@@ -1436,7 +1394,13 @@ static esp_err_t cell_modem_dial_fallback_cgatt(char *ipv4_out, size_t ipv4_len)
     return ESP_OK;
 }
 
-/** ⑤ 官方 RNDIS 拨号：CGDCONT? → MDIALUP? → MDIALUP=1,1 */
+/** ⑤ RNDIS 拨号：MIPCALL（快速主路径）覆 MDIALUP → CGATT 兜底
+ *
+ * 三级路径设计（按实测冷启动耗时排序）：
+ *   1. AT+MIPCALL=1,1  — 实测 RNDIS 模式下 2s 内返回 URC，即时生效（首选）
+ *   2. AT+MDIALUP=1,1  — 上层网卡拨号，官方手册推荐路径（兼容老固件）
+ *   3. CGATT/CGACT     — GPRS 附着兜底（信号弱/未驻网时，最慢）
+ * 任意一级返回有效蜂窝 IPv4 即成功。 */
 static esp_err_t cell_modem_rndis_dial(const char *apn_unused, cell_modem_boot_info_t *info)
 {
     (void)apn_unused;
@@ -1470,11 +1434,10 @@ static esp_err_t cell_modem_rndis_dial(const char *apn_unused, cell_modem_boot_i
         }
     }
 
-    /* 5.3 MDIALUP? */
-    if (cell_modem_at_send("AT+MDIALUP?", response, sizeof(response), 10000) == ESP_OK &&
-        cell_modem_parse_mdialup_ipv4(response, ipv4, sizeof(ipv4))) {
-        ESP_LOGI(TAG, "dial: MDIALUP? ipv4=%s", ipv4);
-        ESP_LOGI(TAG, "dial: already up via MDIALUP?");
+    /* 5.3 MIPCALL? — 先查是否已拨号（模组开机自动拨号时直接命中），等待 */
+    if (cell_modem_at_send("AT+MIPCALL?", response, sizeof(response), 10000) == ESP_OK &&
+        cell_modem_parse_mipcall_ipv4(response, ipv4, sizeof(ipv4))) {
+        ESP_LOGI(TAG, "dial: MIPCALL? already up, ipv4=%s", ipv4);
         if (info != NULL) {
             snprintf(info->cell_ipv4, sizeof(info->cell_ipv4), "%s", ipv4);
         }
@@ -1483,11 +1446,38 @@ static esp_err_t cell_modem_rndis_dial(const char *apn_unused, cell_modem_boot_i
         return ESP_OK;
     }
 
-    /* 5.4 MDIALUP=1,1 */
+    /* 5.4 MIPCALL=1,1 — 快速主路径（实测 2s 出 URC） */
+    ESP_LOGI(TAG, "dial: MIPCALL? not up, dialing via MIPCALL...");
+    memset(response, 0, sizeof(response));
+    esp_err_t ret = cell_modem_at_send_collect("AT+MIPCALL=1,1", response, sizeof(response),
+                                          CELL_MODEM_DIAL_MIPCALL_MS, "+MIPCALL:");
+    if (ret == ESP_OK && cell_modem_parse_mipcall_ipv4(response, ipv4, sizeof(ipv4))) {
+        ESP_LOGI(TAG, "dial: MIPCALL OK, ipv4=%s", ipv4);
+        if (info != NULL) {
+            snprintf(info->cell_ipv4, sizeof(info->cell_ipv4), "%s", ipv4);
+        }
+        g.pdp_done = true;
+        ESP_LOGI(TAG, "PDP context activated successfully");
+        return ESP_OK;
+    }
+    ESP_LOGW(TAG, "dial: MIPCALL fail, trying MDIALUP");
+
+    /* 5.5 MDIALUP? / MDIALUP=1,1 — 官方 RNDIS 拨号路径（兼容老固件） */
+    if (cell_modem_at_send("AT+MDIALUP?", response, sizeof(response), 10000) == ESP_OK &&
+        cell_modem_parse_mdialup_ipv4(response, ipv4, sizeof(ipv4))) {
+        ESP_LOGI(TAG, "dial: MDIALUP? already up, ipv4=%s", ipv4);
+        if (info != NULL) {
+            snprintf(info->cell_ipv4, sizeof(info->cell_ipv4), "%s", ipv4);
+        }
+        g.pdp_done = true;
+        ESP_LOGI(TAG, "PDP context activated successfully");
+        return ESP_OK;
+    }
+
     ESP_LOGI(TAG, "dial: MDIALUP? not connected, dialing...");
     memset(response, 0, sizeof(response));
-    esp_err_t ret = cell_modem_at_send_collect("AT+MDIALUP=1,1", response, sizeof(response),
-                                          CELL_MODEM_DIAL_MDIALUP_MS, "+MDIALUP:");
+    ret = cell_modem_at_send_collect("AT+MDIALUP=1,1", response, sizeof(response),
+                                CELL_MODEM_DIAL_MDIALUP_MS, "+MDIALUP:");
     if (ret == ESP_OK && cell_modem_parse_mdialup_ipv4(response, ipv4, sizeof(ipv4))) {
         ESP_LOGI(TAG, "dial: MDIALUP OK, ipv4=%s", ipv4);
         if (info != NULL) {
@@ -1498,9 +1488,9 @@ static esp_err_t cell_modem_rndis_dial(const char *apn_unused, cell_modem_boot_i
         return ESP_OK;
     }
 
-    ESP_LOGW(TAG, "dial: MDIALUP fail, trying fallback");
+    ESP_LOGW(TAG, "dial: MDIALUP fail, trying CGATT fallback");
 
-    /* 5.5 兜底 */
+    /* 5.6 CGATT/CGACT 兜底（信号弱/未驻网时） */
     ipv4[0] = '\0';
     ret = cell_modem_dial_fallback_cgatt(ipv4, sizeof(ipv4));
     if (ret == ESP_OK) {
@@ -1781,6 +1771,8 @@ static bool cell_modem_diag_run_round(int if_idx)
 
 static void cell_modem_data_diag_task(void *arg)
 {
+    bool ever_passed = false;
+
     while (!s_data_diag_stop && g.netif != NULL && g.state == CELL_MODEM_STATE_GOT_IP) {
         /* 须等 AT PDP 完成后再测，避免 GOT_IP 误报 */
         while (!s_data_diag_stop && g.state == CELL_MODEM_STATE_GOT_IP && !g.pdp_done) {
@@ -1791,18 +1783,45 @@ static void cell_modem_data_diag_task(void *arg)
         }
 
         int if_idx = esp_netif_get_netif_impl_index(g.netif);
+        bool round_ok = false;
         if (if_idx <= 0) {
             ESP_LOGW(TAG, "4G data diag: skip round, bad netif idx=%d", if_idx);
-        } else if (cell_modem_diag_run_round(if_idx)) {
-            ESP_LOGI(TAG, "4G data diag: passed, stop periodic probe");
-            break;
+        } else {
+            round_ok = cell_modem_diag_run_round(if_idx);
         }
 
-        for (uint32_t waited = 0; waited < CELL_MODEM_DIAG_RETRY_MS && !s_data_diag_stop; waited += 1000) {
-            if (g.state != CELL_MODEM_STATE_GOT_IP) {
+        if (round_ok) {
+            /* 通过：切到慢速周期复查模式，持续守门数据面真实可达。
+             * 不再像旧版那样「通过一次就退出」——否则信号变差/RNDIS 链路
+             * 未断时数据面已丢，s_data_path_ok 仍恒 true，应用层误判正常。 */
+            if (!ever_passed) {
+                ESP_LOGI(TAG, "4G data diag: passed, switch to slow re-verify (%ds)",
+                         (int)(CELL_MODEM_DIAG_REVERIFY_MS / 1000));
+                ever_passed = true;
+            }
+            for (uint32_t waited = 0; waited < CELL_MODEM_DIAG_REVERIFY_MS && !s_data_diag_stop; waited += 1000) {
+                if (g.state != CELL_MODEM_STATE_GOT_IP) break;
+                vTaskDelay(pdMS_TO_TICKS(1000));
+            }
+        } else {
+            /* 失败：若之前曾通过，说明数据面在「链路有 IP」前提下丢失
+             * （典型场景：信号差到 PDP 掉但 RNDIS 链路未断、SIM 拔插、
+             *  运营商侧路由失效）。降级状态 → 4G 看门狗 30s 后硬复位 →
+             *  信号恢复后自动重拨。 */
+            if (ever_passed) {
+                ESP_LOGE(TAG, "4G data diag: data path LOST after previous success — "
+                              "invalidating PDP/data_path, dropping to CONNECTED "
+                              "(watchdog will hard-reset to reconnect)");
+                cell_modem_stop_data_diag();   /* 清 s_data_path_ok + 置 stop */
+                g.pdp_done = false;
+                cell_modem_update_state(CELL_MODEM_STATE_CONNECTED);
                 break;
             }
-            vTaskDelay(pdMS_TO_TICKS(1000));
+            /* 从未通过：继续快速重试（原逻辑） */
+            for (uint32_t waited = 0; waited < CELL_MODEM_DIAG_RETRY_MS && !s_data_diag_stop; waited += 1000) {
+                if (g.state != CELL_MODEM_STATE_GOT_IP) break;
+                vTaskDelay(pdMS_TO_TICKS(1000));
+            }
         }
     }
 
@@ -1986,7 +2005,9 @@ static void cell_modem_monitor_task(void *arg)
 
     while (g.event_group != NULL) {
         bool need_rndis_config = g.config.auto_configure_rndis && !g.rndis_configured;
-        bool need_pdp_activation = g.config.auto_activate_pdp && !g.pdp_done;
+        /* SIM 不在位时不再尝试 PDP 软重拨（CPIN 必然失败，纯属浪费 AT 口），
+         * 交由看门狗硬复位模组来重新识别 SIM 热插拔。 */
+        bool need_pdp_activation = g.config.auto_activate_pdp && !g.pdp_done && s_sim_present;
 
         /* RNDIS 链路已连接时不需要重新配置 USB Config。
          * 但 PDP 激活仍然需要——modem 直接以 RNDIS 模式启动时，
@@ -2100,6 +2121,11 @@ static void cell_modem_monitor_task(void *arg)
                 cell_modem_close_at_port();
                 memset(&g.net_info, 0, sizeof(g.net_info));
 
+                /* 硬复位后重新走 boot 序列验证 CPIN，不要继承 SIM 缺失状态 —
+                 * 否则 need_pdp_activation 会被抑制，导致新一轮看门狗也不会触发。 */
+                s_sim_present = true;
+                s_cpin_fail_count = 0;
+
                 cell_modem_update_state(CELL_MODEM_STATE_DISCONNECTED);
 
                 /* 硬复位 modem，强制 USB 重新枚举 */
@@ -2113,15 +2139,18 @@ static void cell_modem_monitor_task(void *arg)
             }
         }
 
-        /* 已获取 IP 时定期查询 CSQ（PDP/AT 配置未完成时不抢 AT 口） */
+        /* 已获取 IP 时定期查询 CSQ + CPIN（PDP/AT 配置未完成时不抢 AT 口） */
         if (g.state == CELL_MODEM_STATE_GOT_IP && !g.at_config_in_progress &&
             !(g.config.auto_activate_pdp && !g.pdp_done)) {
             g.recovery_count = 0;  /* 连接成功，清除恢复计数 */
             /* AT 端口在 PDP 激活后保持打开（未发生 RNDIS 模式切换时），
-             * 直接用于周期性 CSQ 查询。如果发生了 RNDIS 模式切换
-             * （复合模式→纯 RNDIS），AT 端口已关闭，此处跳过。 */
+             * 直接用于周期性 CSQ / CPIN 查询。如果发生了 RNDIS 模式切换
+             * （复合模式→纯 RNDIS），AT 端口已关闭，此处跳过——
+             * 纯 RNDIS 模式下不支持 SIM 热插拔检测与 CSQ 周期更新。 */
             if (g.at_port != NULL && xSemaphoreTake(g.at_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
                 char response[128];
+
+                /* CSQ：信号强度周期刷新（rssi==99 不更新，保留上次有效值） */
                 if (cell_modem_at_send("AT+CSQ", response, sizeof(response), 3000) == ESP_OK) {
                     char *p = strstr(response, "+CSQ:");
                     if (p) {
@@ -2131,9 +2160,42 @@ static void cell_modem_monitor_task(void *arg)
                         if (rssi >= 0 && rssi <= 31) {
                             g.csq_value = rssi;
                         }
-                        /* rssi == 99（未知）: 不更新，保留上次有效值 */
                     }
                 }
+
+                /* CPIN：SIM 在位周期复检。连续 N 次 NOT READY/ERROR 才认定 SIM 丢失，
+                 * 避免小区切换/RF 重配瞬态误报。检测到丢失后仅降状态 + 清标志，
+                 * 不主动硬复位——复位策略交由上层或看门狗决定。
+                 * SIM 重新插入后 monitor 的 need_pdp_activation 路径会自动重拨。 */
+                if (cell_modem_at_send("AT+CPIN?", response, sizeof(response), 3000) == ESP_OK) {
+                    if (strstr(response, "READY") != NULL) {
+                        if (s_cpin_fail_count > 0 || !s_sim_present) {
+                            ESP_LOGI(TAG, "CPIN: READY (recovered, was fail_count=%d)",
+                                     s_cpin_fail_count);
+                        }
+                        s_cpin_fail_count = 0;
+                        s_sim_present = true;
+                    } else {
+                        s_cpin_fail_count++;
+                        ESP_LOGW(TAG, "CPIN: not READY (%d/%d): %s",
+                                 s_cpin_fail_count, CELL_MODEM_CPIN_FAIL_THRESHOLD,
+                                 response[0] ? response : "(empty)");
+                        if (s_cpin_fail_count >= CELL_MODEM_CPIN_FAIL_THRESHOLD &&
+                            s_sim_present) {
+                            s_sim_present = false;
+                            ESP_LOGE(TAG, "SIM removed/lost after %d consecutive CPIN failures — "
+                                          "invalidating PDP/data_path state",
+                                     s_cpin_fail_count);
+                            g.pdp_done = false;
+                            cell_modem_stop_data_diag();  /* 清 s_data_path_ok */
+                            /* 降到 CONNECTED（链路在但数据不通），让 4G 看门狗
+                             * 30s 后硬复位 → SIM 重新插入后自动重拨。
+                             * 不在这里直接复位，避免用户临时换卡也被强制重启。 */
+                            cell_modem_update_state(CELL_MODEM_STATE_CONNECTED);
+                        }
+                    }
+                }
+
                 xSemaphoreGive(g.at_mutex);
             }
         }
@@ -2453,6 +2515,17 @@ esp_err_t cell_modem_init(const cell_modem_hw_config_t *hw, const cell_modem_con
 
     ESP_LOGI(TAG, "Initializing cellular modem module...");
 
+    /* 确保默认事件循环与 netif 已就绪。两者是 esp_event_handler_register /
+     * esp_netif_new 的前置依赖；若调用方已自行创建，此处忽略 INVALID_STATE。 */
+    ret = esp_event_loop_create_default();
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+        ESP_RETURN_ON_ERROR(ret, TAG, "Failed to create default event loop");
+    }
+    ret = esp_netif_init();
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+        ESP_RETURN_ON_ERROR(ret, TAG, "Failed to initialize netif");
+    }
+
     g.hw = *hw;
 
     /* 保存配置 */
@@ -2625,6 +2698,8 @@ esp_err_t cell_modem_deinit(void)
     g.cdc_connected = false;
     g.dev_addr = 0;
     g.csq_value = -1;
+    s_sim_present = true;
+    s_cpin_fail_count = 0;
 
     ESP_LOGI(TAG, "deinitialized");
     return ESP_OK;
@@ -2660,6 +2735,13 @@ bool cell_modem_is_connected(void)
 bool cell_modem_is_pdp_ready(void)
 {
     return g.state == CELL_MODEM_STATE_GOT_IP && g.pdp_done && !g.at_config_in_progress;
+}
+
+bool cell_modem_is_data_path_ok(void)
+{
+    /* 数据面探针通过即认为真实可达；附加 pdp_ready 兜底，
+     * 防止 s_data_path_ok 在 LOST_IP/重连间隙未及时清零时的误报。 */
+    return s_data_path_ok && cell_modem_is_pdp_ready();
 }
 
 bool cell_modem_wait_for_pdp_ready(uint32_t timeout_ms)
