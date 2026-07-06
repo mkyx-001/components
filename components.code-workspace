@@ -16,6 +16,10 @@
 		{
 			"name": "📈 性能例程",
 			"path": "examples/performeter_demo"
+		},
+		{
+			"name": "🌐 以太网例程",
+			"path": "examples/eth_ch182d_basic"
 		}
 	],
 	"settings": {

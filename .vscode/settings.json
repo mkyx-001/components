@@ -5,5 +5,8 @@
     "--background-index",
     "--query-driver=**",
     "--compile-commands-dir=d:\\components\\build"
+  ],
+  "idf.openOcdConfigs": [
+    "board/esp32p4-builtin.cfg"
   ]
 }

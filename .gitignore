@@ -5,3 +5,4 @@
 # ESP-IDF build artifacts
 **/build/
 sdkconfig
+**/managed_components/

@@ -10,6 +10,7 @@ ESP-IDF 可复用组件集合，用于集中维护、开发与发布自研 manag
 |:---:|:---|:---|
 | 📡 [`cellular_modem`](./packages/cellular_modem/) | USB RNDIS 蜂窝模组驱动（AT 控制面 + RNDIS 数据面，面向 ESP32-P4 等 USB Host 场景） | 📖 [README](./packages/cellular_modem/README.md) |
 | 📈 [`performeter`](./packages/performeter/) | 基于 FreeRTOS run-time stats 的性能监视器（CPU 利用率、任务排行、堆/栈水位） | 📖 [README](./packages/performeter/README.md) · 📝 [DESIGN](./packages/performeter/DESIGN.md) |
+| 🌐 [`eth_ch182d`](./packages/eth_ch182d/) | CH182D 以太网驱动（ESP32-P4 内置 EMAC + CH182D PHY，RMII，可配置名字/引脚） | 📖 [README](./packages/eth_ch182d/README.md) |
 
 ---
 
@@ -21,10 +22,12 @@ components/
 ├── 🗂️  components.code-workspace   # VS Code / Cursor 多根工作区
 ├── packages/
 │   ├── 📡 cellular_modem/          # 蜂窝模组组件（库）
-│   └── 📈 performeter/             # 性能监视器组件（库）
+│   ├── 📈 performeter/             # 性能监视器组件（库）
+│   └── 🌐 eth_ch182d/              # CH182D 以太网组件（库）
 └── examples/
     ├── cellular_modem_basic/       # cellular_modem 最小例程
-    └── performeter_demo/           # performeter 演示工程
+    ├── performeter_demo/           # performeter 演示工程
+    └── eth_ch182d_basic/           # eth_ch182d 最小例程
 ```
 
 > 💡 推荐用 `components.code-workspace` 打开本仓库，可同时浏览总览、组件包与示例工程。
@@ -89,6 +92,11 @@ idf.py build flash monitor
 # 📈 performeter 例程
 cd examples/performeter_demo
 idf.py set-target esp32
+idf.py build flash monitor
+
+# 🌐 eth_ch182d 例程
+cd examples/eth_ch182d_basic
+idf.py set-target esp32p4
 idf.py build flash monitor
 ```
 
