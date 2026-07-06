@@ -111,6 +111,18 @@ esp_err_t eth_ch182d_init(const eth_ch182d_config_t *cfg)
 
     s_eth_tag = cfg->name;
 
+    /* 初始化 esp_netif 和默认事件循环（容忍已初始化的情况，便于多网络组件共存） */
+    esp_err_t ret = esp_netif_init();
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(s_eth_tag, "esp_netif_init failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    ret = esp_event_loop_create_default();
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(s_eth_tag, "esp_event_loop_create_default failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
     /* 创建事件组 */
     s_eth_event_group = xEventGroupCreate();
 
@@ -168,7 +180,7 @@ esp_err_t eth_ch182d_init(const eth_ch182d_config_t *cfg)
 
     /* ---- 安装以太网驱动 ---- */
     esp_eth_config_t eth_config = ETH_DEFAULT_CONFIG(mac, phy);
-    esp_err_t ret = esp_eth_driver_install(&eth_config, &s_eth_handle);
+    ret = esp_eth_driver_install(&eth_config, &s_eth_handle);
     if (ret != ESP_OK) {
         ESP_LOGE(s_eth_tag, "Ethernet driver install failed: %s", esp_err_to_name(ret));
         mac->del(mac);

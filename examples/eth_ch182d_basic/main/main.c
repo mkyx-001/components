@@ -121,9 +121,14 @@ void app_main(void)
                       (esp_netif_get_ip_info(netif, &ip) == ESP_OK) &&
                       (ip.ip.addr != 0);
 
+        char ip_str[16] = {0};
+        if (has_ip) {
+            esp_ip4addr_ntoa((const esp_ip4_addr_t *)&ip.ip, ip_str, sizeof(ip_str));
+        }
+
         ESP_LOGI(TAG, "link=%s ip=%s dhcp=%s",
                  eth_ch182d_is_connected() ? "UP" : "DOWN",
-                 has_ip ? ip4addr_ntoa((const ip4_addr_t *)&ip.ip) : "-",
+                 has_ip ? ip_str : "-",
                  eth_ch182d_is_dhcp_enabled() ? "ON" : "OFF");
 
         vTaskDelay(pdMS_TO_TICKS(5000));
