@@ -1,0 +1,16 @@
+# esp_target_flasher_demo example 工程默认配置
+# 这些键在首次 idf.py build 时会被写入 sdkconfig，保证开箱可用。
+
+# ===== esp-serial-flasher UART 传输 =====
+CONFIG_SERIAL_FLASHER_PORT_UART=y
+
+# ===== 引脚极性（按你的硬件修改）=====
+# 若 RST/BOOT 经反相器（如 V4PRO 板），取消下行注释：
+# CONFIG_SERIAL_FLASHER_RESET_INVERT=y
+# CONFIG_SERIAL_FLASHER_BOOT_INVERT=y
+
+# ===== 串口日志级别 =====
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# ===== 目标芯片固定 ESP32-P4（Host）=====
+CONFIG_IDF_TARGET="esp32p4"

@@ -1,0 +1,8 @@
+version: "0.1.0"
+description: "ESP host-to-target firmware flasher wrapper over esp-serial-flasher"
+url: "https://github.com/espressif/esp-serial-flasher"
+dependencies:
+  idf:
+    version: ">=5.5"
+  espressif/esp-serial-flasher:
+    version: "~2.0.0"

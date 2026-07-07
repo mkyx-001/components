@@ -20,6 +20,10 @@
 		{
 			"name": "🌐 以太网例程",
 			"path": "examples/eth_ch182d_basic"
+		},
+		{
+			"name": "🔥 烧录例程",
+			"path": "examples/esp_target_flasher_demo"
 		}
 	],
 	"settings": {
