@@ -1,6 +1,10 @@
 version: "0.1.0"
 description: "ESP host-to-target firmware flasher wrapper over esp-serial-flasher"
-url: "https://github.com/espressif/esp-serial-flasher"
+license: Apache-2.0
+url: https://github.com/mkyx-001/components/tree/main/packages/esp_target_flasher
+repository: https://github.com/mkyx-001/components.git
+repository_info:
+  path: packages/esp_target_flasher
 dependencies:
   idf:
     version: ">=5.5"
