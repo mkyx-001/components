@@ -1,6 +1,6 @@
 /**
  * @file eth_ch182d.h
- * @brief CH182D 以太网驱动接口（ESP32-P4 内置 EMAC + CH182D PHY，RMII）
+ * @brief CH182D 以太网驱动接口（ESP32/P4 内置 EMAC + CH182D PHY，RMII）
  *
  * 引脚 / PHY 地址 / 接口名字均通过 eth_ch182d_config_t 在运行时配置，
  * 组件不依赖任何外部 board_config.h，可直接被多个项目共享。
@@ -59,6 +59,9 @@ typedef struct {
  * cfg.phy_addr = 1;
  * eth_ch182d_init(&cfg);
  * @endcode
+ *
+ * @note 原始 ESP32 的外部 REFCLK 必须固定在 GPIO0，使用时请设置
+ *       cfg.rmii_clk = GPIO_NUM_0，其余 RMII 引脚也需按 ESP32 板子调整。
  */
 #define ETH_CH182D_CONFIG_DEFAULT() { \
     .name       = "ETH0",            \

@@ -1,8 +1,8 @@
 # eth_ch182d
 
-CH182D 以太网驱动组件（ESP-IDF / ESP32-P4）。
+CH182D 以太网驱动组件（ESP-IDF / ESP32 · ESP32-P4）。
 
-该组件在 ESP32-P4 内置 EMAC（RMII 模式）上驱动 **CH182D** PHY 收发器，提供：
+该组件在 ESP32 / ESP32-P4 内置 EMAC（RMII 模式）上驱动 **CH182D** PHY 收发器，提供：
 
 - 一行 `eth_ch182d_init(&cfg)` 拉起完整以太网网口（EMAC + PHY + `esp_netif` + 事件）
 - DHCP / 静态 IP 运行时切换
@@ -16,13 +16,14 @@ CH182D 以太网驱动组件（ESP-IDF / ESP32-P4）。
 ```text
 CH182D PHY ──RMII──┐
    │               │
-   │  50MHz REFCLK ├──► ESP32-P4 EMAC（内置，RMII）
+   │  50MHz REFCLK ├──► ESP32 / ESP32-P4 EMAC（内置，RMII）
    │               │
    └── SMI(MDC/MDIO)──►
 ```
 
-- **MAC**：ESP32-P4 内置 EMAC，RMII 模式，REFCLK 由 CH182D 输出（外部时钟输入 `EMAC_CLK_EXT_IN`）。
+- **MAC**：ESP32 / ESP32-P4 内置 EMAC，RMII 模式，REFCLK 由 CH182D 输出（外部时钟输入 `EMAC_CLK_EXT_IN`）。
 - **PHY**：CH182D，PHY 地址由其 PA0/PA1 等引脚决定。
+- **⚠ ESP32（原始）限制**：外部 REFCLK 必须固定在 GPIO0，其余 RMII 引脚也需按板子调整。
 
 ## 目录结构
 

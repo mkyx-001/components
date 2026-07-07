@@ -1,8 +1,9 @@
 /**
  * @file eth_ch182d.c
- * @brief CH182D 以太网驱动实现（ESP32-P4 内置 EMAC + CH182D PHY，RMII）
+ * @brief CH182D 以太网驱动实现（ESP32/P4 内置 EMAC + CH182D PHY，RMII）
  *
- * CH182D 输出 50MHz REFCLK → ESP32-P4 RMII 时钟输入。
+ * CH182D 输出 50MHz REFCLK → ESP32/P4 RMII 时钟输入。
+ * 支持 ESP32（原始）和 ESP32-P4，两者均内置 EMAC。
  * 使用 sergeykharenko/ch182 组件的 PHY 驱动。
  *
  * 所有引脚 / PHY 地址 / 接口名字均由调用方通过 eth_ch182d_config_t 提供。
@@ -132,7 +133,7 @@ esp_err_t eth_ch182d_init(const eth_ch182d_config_t *cfg)
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP,
                                                 &ip_event_handler, NULL));
 
-    /* ---- 配置 ESP32-P4 内置 EMAC（RMII 引脚） ---- */
+    /* ---- 配置内置 EMAC（RMII 引脚，ESP32/P4 通用） ---- */
     eth_esp32_emac_config_t emac_config = ETH_ESP32_EMAC_DEFAULT_CONFIG();
 
     // SMI 管理接口
