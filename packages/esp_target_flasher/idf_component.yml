@@ -1,10 +1,20 @@
-version: "0.1.0"
+version: "0.2.0"
 description: "ESP host-to-target firmware flasher wrapper over esp-serial-flasher"
 license: Apache-2.0
 url: https://github.com/mkyx-001/components/tree/main/packages/esp_target_flasher
 repository: https://github.com/mkyx-001/components.git
 repository_info:
   path: packages/esp_target_flasher
+targets:
+  - esp32
+  - esp32s2
+  - esp32s3
+  - esp32c2
+  - esp32c3
+  - esp32c5
+  - esp32c6
+  - esp32p4
+  - esp32h2
 dependencies:
   idf:
     version: ">=5.5"

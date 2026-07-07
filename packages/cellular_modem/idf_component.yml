@@ -1,10 +1,14 @@
 description: USB RNDIS cellular modem driver (AT control + RNDIS data plane)
-version: 1.1.0
+version: 1.2.0
 license: Apache-2.0
 url: https://github.com/mkyx-001/components/tree/main/packages/cellular_modem
 repository: https://github.com/mkyx-001/components.git
 repository_info:
   path: packages/cellular_modem
+targets:
+  - esp32s2
+  - esp32s3
+  - esp32p4
 dependencies:
   idf:
     version: '>=5.0'

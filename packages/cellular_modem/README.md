@@ -1,6 +1,6 @@
 # cellular_modem
 
-USB RNDIS 蜂窝模组驱动组件（ESP-IDF / ESP32-P4）。
+USB RNDIS 蜂窝模组驱动组件（ESP-IDF / ESP32-S2 · S3 · P4）。
 
 该组件提供：
 - RNDIS 数据面接入（`esp_netif`）

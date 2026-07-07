@@ -6,3 +6,6 @@
 **/build/
 sdkconfig
 **/managed_components/
+
+# Component manager pack output
+**/dist/

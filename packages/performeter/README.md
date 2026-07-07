@@ -1,6 +1,6 @@
 # Performeter — ESP32 性能监视器组件
 
-ESP32 上的周期性性能监视器，基于 FreeRTOS 运行时统计（run-time stats）采集 **每核 CPU 利用率**、**逐任务 CPU 占比排行** 与 **堆/栈水位**，通过串口日志周期输出。作为 ESP-IDF managed component 提供。
+ESP32 系列上的周期性性能监视器，基于 FreeRTOS 运行时统计（run-time stats）采集 **每核 CPU 利用率**、**逐任务 CPU 占比排行** 与 **堆/栈水位**，通过串口日志周期输出。支持全系列 ESP32 SoC（双核/单核自适应），作为 ESP-IDF managed component 提供。
 
 > 实现细节与原理见 [`DESIGN.md`](./DESIGN.md)。
 
