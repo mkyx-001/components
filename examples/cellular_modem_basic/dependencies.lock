@@ -76,7 +76,7 @@ dependencies:
     - esp32p4
     version: 0.3.1
   espressif/usb:
-    component_hash: 4f00ced5663505a368bafcb9bb6b2e4a5033cc5625b8f510755a75baadf4ff1d
+    component_hash: 1d90d7c7b0682dbfcc36f47cf5acf224a5cfb850a62f39cd86d3159cfec12a81
     dependencies:
     - name: idf
       require: private
@@ -91,15 +91,15 @@ dependencies:
     - esp32p4
     - esp32h4
     - linux
-    version: 1.4.0
+    version: 1.4.1
   idf:
     source:
       type: idf
-    version: 6.0.1
+    version: 6.0.2
 direct_dependencies:
 - espressif/iot_usbh_rndis
 - espressif/usb
 - idf
-manifest_hash: 61e4bc77b043397e0f34574a467a1593bf610ce3b2e1953caeb94d0c4092fc14
+manifest_hash: 2fc422e0813a4a1b19fa302b5e0ab68a25012f79b7eb627ae923f620e06b0602
 target: esp32p4
 version: 3.0.0
