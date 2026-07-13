@@ -44,8 +44,8 @@ static const char *TAG = "cell_modem";
 #define CELL_MODEM_USB_PID_RNDIS_DEFAULT     0x3004
 #define CELL_MODEM_USB_PID_COMPOSITE_DEFAULT 0x3012
 
-#define CELL_MODEM_RNDIS_IF_KEY      "cell_rndis"
-#define CELL_MODEM_ROUTE_PRIORITY    50
+#define CELL_MODEM_NETIF_NAME_DEFAULT  "cell_rndis"
+#define CELL_MODEM_ROUTE_PRIORITY      50
 
 #define CELL_MODEM_AT_BUF_SIZE       512
 #define CELL_MODEM_MON_INTERVAL_MS   10000
@@ -2490,11 +2490,19 @@ static esp_err_t cell_modem_install_rndis(void)
     ret = iot_eth_install(&eth_config, &g.eth_handle);
     ESP_RETURN_ON_ERROR(ret, TAG, "Failed to install ETH driver");
 
-    /* 创建 modem 专用 netif（路由优先级 50） */
+    /* 创建 modem 专用 netif（名称/路由优先级由 config 注入；未配置时用内置默认值）
+ *
+ * if_key 与 if_desc 同时取自 netif_name：
+ *   - if_key  决定内核侧 netif 名字（"cell_rndis" → "cell_rndis0"）
+ *   - if_desc 是路由表 / esp_netif list 里的可读描述
+ * 若调用方同时挂 eth_ch182d / Wi-Fi，请确保 netif_name 与之不冲突。 */
     esp_netif_inherent_config_t netif_base = ESP_NETIF_INHERENT_DEFAULT_ETH();
-    netif_base.if_key = CELL_MODEM_RNDIS_IF_KEY;
-    netif_base.if_desc = "cell_rndis";
-    netif_base.route_prio = CELL_MODEM_ROUTE_PRIORITY;
+    const char *netif_name = (g.config.netif_name != NULL && g.config.netif_name[0] != '\0')
+                            ? g.config.netif_name : CELL_MODEM_NETIF_NAME_DEFAULT;
+    netif_base.if_key  = netif_name;
+    netif_base.if_desc = netif_name;
+    netif_base.route_prio = (g.config.route_priority > 0)
+                        ? g.config.route_priority : CELL_MODEM_ROUTE_PRIORITY;
 
     esp_netif_config_t netif_config = {
         .base = &netif_base,
@@ -2558,6 +2566,8 @@ esp_err_t cell_modem_init(const cell_modem_hw_config_t *hw, const cell_modem_con
             .enable_diag            = true,
             .diag_tcp_host          = NULL,
             .diag_tcp_port          = CELL_MODEM_DIAG_TCP_PORT,
+            .netif_name             = NULL,    /* NULL=用内置 "cell_rndis" */
+            .route_priority         = 0,       /* 0=用内置默认 CELL_MODEM_ROUTE_PRIORITY */
         };
     }
     if (g.config.at_interface_num < 0) {

@@ -58,6 +58,9 @@ typedef struct {
     bool        enable_diag;              /**< GOT_IP 且 pdp_done 后 TCP/ICMP 诊断 */
     const char *diag_tcp_host;            /**< 诊断 TCP 主机；NULL=跳过 TCP 探针 */
     uint16_t    diag_tcp_port;            /**< 诊断 TCP 端口，默认 443 */
+    /* ======================== netif 接入 ======================== */
+    const char *netif_name;             /**< esp_netif 名称（同时作为 if_key 与 if_desc）；NULL=使用 "cell_rndis" */
+    int         route_priority;         /**< 默认路由优先级；0=使用内置默认 50，越大越优先 */
 } cell_modem_config_t;
 
 /* ======================== 回调 ======================== */

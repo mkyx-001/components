@@ -41,6 +41,19 @@
 #define CELL_MODEM_DIAG_TCP_HOST     "www.baidu.com"
 #endif
 
+/*
+ * 蜂窝 netif 接入：netif_name 同时作为 esp_netif 的 if_key（内核侧 netif 名字，如
+ * "cell_rndis" → "cell_rndis0"）与 if_desc（路由表/日志里的可读描述）。
+ * route_priority 决定蜂窝作为默认路由的优先级——数值越大越优先，可与以太网/Wi-Fi 抢占。
+ * 蜂窝作为唯一外网时保持 50 即可；若与有线/无线并存，建议设为更高（如 60）使其成为首选。
+ */
+#ifndef CELL_MODEM_NETIF_NAME
+#define CELL_MODEM_NETIF_NAME        "cell_rndis"
+#endif
+#ifndef CELL_MODEM_ROUTE_PRIORITY
+#define CELL_MODEM_ROUTE_PRIORITY    50
+#endif
+
 static const char *TAG = "cell_modem_example";
 
 /* 状态枚举可读化，便于日志判读与上层业务分支 */
@@ -80,6 +93,8 @@ void app_main(void)
         .enable_diag = true,
         .diag_tcp_host = CELL_MODEM_DIAG_TCP_HOST,
         .diag_tcp_port = 443,
+        .netif_name = CELL_MODEM_NETIF_NAME,
+        .route_priority = CELL_MODEM_ROUTE_PRIORITY,
     };
 
     ESP_LOGI(TAG, "cellular modem basic example start");

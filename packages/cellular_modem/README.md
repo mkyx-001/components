@@ -64,6 +64,8 @@ void app_main(void)
         .enable_diag = true,
         .diag_tcp_host = NULL,        // 可选，如 "example.com"
         .diag_tcp_port = 443,
+        .netif_name = "cell_rndis",   // esp_netif 名称（同时作为 if_key 和 if_desc）
+        .route_priority = 50,         // 默认路由优先级，越大越优先
     };
 
     // 可选：提前硬复位，加快上电收敛
