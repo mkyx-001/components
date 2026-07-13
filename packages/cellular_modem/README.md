@@ -106,7 +106,7 @@ idf.py build flash monitor
 - `cell_modem_is_connected()`: 是否已获得本地 IP
 - `cell_modem_is_pdp_ready()`: 是否蜂窝数据面就绪
 - `cell_modem_wait_for_pdp_ready()`: 阻塞等待就绪
-- `cell_modem_register_status_callback()`: 注册状态回调
+- `cell_modem_register_status_callback()`: 注册状态回调。回调会在状态变化 **或** PDP 激活完成（state 未变也会触发）时被调用，订阅者应结合 `cell_modem_is_pdp_ready()` 综合判断就绪。
 - `cell_modem_get_signal_strength()`: 获取 CSQ 信号值
 - `cell_modem_is_data_path_ok()`: 数据面是否已验证可达（TCP/ICMP 探针通过，区别于 `is_pdp_ready()` 的 AT 拨号成功）
 

@@ -102,6 +102,15 @@ esp_err_t cell_modem_get_net_info(cell_modem_net_info_t *info);
 
 /**
  * @brief 注册状态变更回调
+ *
+ * 回调时机：
+ *   - cell_modem_state_t 发生状态转移时（如 CONNECTING → GOT_IP）；
+ *   - 蜂窝 PDP 上下文激活完成时，即便 state 未变（RNDIS 链路先 Up 时常见），
+ *     回调会被再次触发，以便上层订阅者重新评估就绪状态。
+ *
+ * 因此订阅者**不应**假设「回调触发 = state 变了」；正确做法是同时
+ * 查询 cell_modem_is_pdp_ready() / cell_modem_is_data_path_ok()，以
+ * (state, pdp_ready, data_path_ok) 三元组判断就绪。
  */
 void cell_modem_register_status_callback(cell_modem_status_callback_t callback);
 
