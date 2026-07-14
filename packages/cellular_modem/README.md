@@ -38,7 +38,7 @@ cellular_modem/
 
 ```yaml
 dependencies:
-  mkyx-001/cellular_modem: "^1.1.0"
+  mkyx-001/cellular_modem: "^1.4.0"
 ```
 
 ### 2) 初始化与拨号
@@ -66,6 +66,7 @@ void app_main(void)
         .diag_tcp_port = 443,
         .netif_name = "cell_rndis",   // esp_netif 名称（同时作为 if_key 和 if_desc）
         .route_priority = 50,         // 默认路由优先级，越大越优先
+        .mtu = 0,                     // 0 = 使用默认 1400；RNDIS+蜂窝链路建议 <1500
     };
 
     // 可选：提前硬复位，加快上电收敛
@@ -144,6 +145,45 @@ idf.py build flash monitor
   - 数据面诊断（`enable_diag=true` + `diag_tcp_host` 配置）启用后，diag 任务会在首次通过后以 60s 周期复查数据面；复查失败时降级状态并触发 4G 看门狗硬复位，信号恢复后自动重拨。
   - 未启用数据面诊断时，信号差但 RNDIS 链路未断且 DHCP 租约仍存的场景下，组件无法感知数据面失效，需外部重启或开启诊断。
 - **看门狗触发硬复位会断开当前所有 TCP 连接**：30s 无连接即复位模组，量产场景需评估上层业务的断连重连能力。
+
+## 版本历史（Changelog）
+
+### v1.4.0
+
+- **修复（重要）**：RNDIS 拨号双激活。ML307C 等模组开机常自动 `AT+MIPCALL`（激活模组内部 AT socket 栈），但 RNDIS 网桥（`AT+MDIALUP`）未必同时激活。原逻辑查到 MIPCALL 已 up 即认为拨号成功，导致 RNDIS 链路 Up、本地 DNS（modem 网关 IP）正常，但 TCP connect / ICMP 全部超时（`errno=113`，SYN 无响应）。现在 `MIPCALL` 与 `MDIALUP` 必须**都**激活才视为数据面就绪；MDIALUP 幂等失败（已被 MIPCALL 覆盖的固件回 CME ERROR）按已 up 处理，不致命。
+- **新增**：`cell_modem_config_t.mtu` 字段，默认 1400。RNDIS 每包 +44B 头且蜂窝侧 MTU 常 <1500，使用默认 1500 会导致大包（TCP 数据段 / ICMP / 分片）被模组丢弃，表现为 DNS（小 UDP）通但 TCP/ICMP 失败。
+
+### v1.3.0
+
+- **新增**：`netif_name` 与 `route_priority` 支持产品注入，便于多网络共存场景下自定义 RNDIS netif 名称与路由优先级（原先硬编码为 `cell_rndis` / 50）。
+
+### v1.2.1
+
+- **修复**：PDP 在 `IP_EVENT_ETH_GOT_IP`（RNDIS 视作 ETH）下完成时补发状态回调。原先该路径下状态回调可能漏触发，导致上层订阅者收不到就绪通知。
+- 例程升级至 ESP-IDF v6.0.2 并同步依赖锁。
+
+### v1.2.0
+
+- **改进**：全组件补充 `targets` 声明（esp32s2 / esp32s3 / esp32p4），便于组件管理器按目标过滤。
+
+### v1.1.0
+
+- **新增**：数据面诊断 API（`cell_modem_is_data_path_ok()` / `enable_diag` / `diag_tcp_host` / `diag_tcp_port`），通过 DNS/ICMP/TCP 探针区分「AT 拨号成功」与「上下行真实可达」。
+- **改进**：例程状态判读逻辑，结合 PDP 就绪与数据面诊断综合展示。
+
+### v1.0.1
+
+- 首个发布到 ESP Component Registry 的版本，补充 registry 元数据与文档。
+
+### v1.0.0
+
+- **初始版本**：USB RNDIS 蜂窝模组驱动。
+  - RNDIS 数据面接入（`esp_netif`）
+  - CDC AT 控制面（自动拨号、APN 识别、状态监控）
+  - 连接看门狗与自动恢复逻辑
+  - 修复 SIM 热插拔后无法恢复（看门狗被 AT 任务饿死）
+
+> 历史提交详见 [git log](https://github.com/mkyx-001/components/tree/main/packages/cellular_modem)。
 
 ## 版本发布建议
 
