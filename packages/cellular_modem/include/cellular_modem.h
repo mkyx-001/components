@@ -61,6 +61,7 @@ typedef struct {
     /* ======================== netif 接入 ======================== */
     const char *netif_name;             /**< esp_netif 名称（同时作为 if_key 与 if_desc）；NULL=使用 "cell_rndis" */
     int         route_priority;         /**< 默认路由优先级；0=使用内置默认 50，越大越优先 */
+    int         mtu;                    /**< RNDIS netif MTU；0=使用内置默认 1400。RNDIS+蜂窝链路需小于 1500 以避免 USB/蜂窝侧丢包 */
 } cell_modem_config_t;
 
 /* ======================== 回调 ======================== */

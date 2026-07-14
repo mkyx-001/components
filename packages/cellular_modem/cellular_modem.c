@@ -46,6 +46,7 @@ static const char *TAG = "cell_modem";
 
 #define CELL_MODEM_NETIF_NAME_DEFAULT  "cell_rndis"
 #define CELL_MODEM_ROUTE_PRIORITY      50
+#define CELL_MODEM_MTU_DEFAULT         1400   /* RNDIS+蜂窝链路：USB 封装(44B)+蜂窝 MTU 限制，1500 易丢大包 */
 
 #define CELL_MODEM_AT_BUF_SIZE       512
 #define CELL_MODEM_MON_INTERVAL_MS   10000
@@ -1417,13 +1418,17 @@ static esp_err_t cell_modem_dial_fallback_cgatt(char *ipv4_out, size_t ipv4_len)
     return ESP_OK;
 }
 
-/** ⑤ RNDIS 拨号：MIPCALL（快速主路径）覆 MDIALUP → CGATT 兜底
+/** ⑤ RNDIS 拨号：MIPCALL（AT 栈）+ MDIALUP（RNDIS 桥接）→ CGATT 兜底
  *
- * 三级路径设计（按实测冷启动耗时排序）：
- *   1. AT+MIPCALL=1,1  — 实测 RNDIS 模式下 2s 内返回 URC，即时生效（首选）
- *   2. AT+MDIALUP=1,1  — 上层网卡拨号，官方手册推荐路径（兼容老固件）
- *   3. CGATT/CGACT     — GPRS 附着兜底（信号弱/未驻网时，最慢）
- * 任意一级返回有效蜂窝 IPv4 即成功。 */
+ * 路径设计：
+ *   1. AT+MIPCALL=1,1   — 激活模组内部 AT socket TCP/IP 栈（开机常自动 up）
+ *   2. AT+MDIALUP=1,1   — 激活 RNDIS/USB 网卡数据桥接（RNDIS 网口真实数据面）
+ *   3. CGATT/CGACT       — GPRS 附着兜底（信号弱/未驻网时，最慢）
+ *
+ * 关键：MIPCALL 与 MDIALUP 是两条独立语义——MIPCALL 仅激活 AT 栈，不必然激活
+ * RNDIS 桥接。模组开机自动 MIPCALL 时，RNDIS 网口能 DHCP、本地(网关 IP)能应答 DNS，
+ * 但若 MDIALUP 未激活，TCP connect/ICMP 会全部超时（SYN 无响应）。因此 MIPCALL 与
+ * MDIALUP 必须「都」激活才视为数据面就绪；MDIALUP 幂等失败（已被 MIPCALL 覆盖）不致命。 */
 static esp_err_t cell_modem_rndis_dial(const char *apn_unused, cell_modem_boot_info_t *info)
 {
     (void)apn_unused;
@@ -1458,60 +1463,78 @@ static esp_err_t cell_modem_rndis_dial(const char *apn_unused, cell_modem_boot_i
     }
 
     /* 5.3 MIPCALL? — 先查是否已拨号（模组开机自动拨号时直接命中），等待 */
+    bool mipcall_up = false;
     if (cell_modem_at_send("AT+MIPCALL?", response, sizeof(response), 10000) == ESP_OK &&
         cell_modem_parse_mipcall_ipv4(response, ipv4, sizeof(ipv4))) {
         ESP_LOGI(TAG, "dial: MIPCALL? already up, ipv4=%s", ipv4);
+        mipcall_up = true;
+    } else {
+        /* 5.4 MIPCALL=1,1 — 快速主路径（实测 2s 出 URC） */
+        ESP_LOGI(TAG, "dial: MIPCALL? not up, dialing via MIPCALL...");
+        memset(response, 0, sizeof(response));
+        esp_err_t ret = cell_modem_at_send_collect("AT+MIPCALL=1,1", response, sizeof(response),
+                                              CELL_MODEM_DIAL_MIPCALL_MS, "+MIPCALL:");
+        if (ret == ESP_OK && cell_modem_parse_mipcall_ipv4(response, ipv4, sizeof(ipv4))) {
+            ESP_LOGI(TAG, "dial: MIPCALL OK, ipv4=%s", ipv4);
+            mipcall_up = true;
+        } else {
+            ESP_LOGW(TAG, "dial: MIPCALL fail, trying MDIALUP");
+        }
+    }
+
+    /*
+     * 5.5 确保 RNDIS 网桥拨号（MDIALUP）激活——关键修复点。
+     *
+     * ML307C 的两条「拨号」语义不同：
+     *   - MIPCALL：激活模组内部 AT socket TCP/IP 栈（供 AT+MIPOPEN 使用）；
+     *   - MDIALUP：激活 RNDIS/USB 网卡数据桥接（把 RNDIS 网口的包转发到蜂窝侧）。
+     * 模组开机自动 MIPCALL 时，RNDIS 网桥未必同时激活——表现为 RNDIS 链路 Up、
+     * ESP 拿到本地 IP、模组本地(192.168.0.1)能应答 DNS，但 TCP connect/ICMP 全部
+     * 超时（SYN 发出无响应）。因此无论 MIPCALL 是否已 up，都必须显式激活/确认
+     * MDIALUP。MDIALUP 已激活时再发 =1,1 通常回 +CME ERROR（幂等），按已 up 处理。
+     */
+    {
+        char mdialup_ipv4[16] = "";
+        /* 先查 MDIALUP? 是否已 up */
+        if (cell_modem_at_send("AT+MDIALUP?", response, sizeof(response), 10000) == ESP_OK &&
+            cell_modem_parse_mdialup_ipv4(response, mdialup_ipv4, sizeof(mdialup_ipv4))) {
+            ESP_LOGI(TAG, "dial: MDIALUP already up, ipv4=%s (RNDIS bridge ready)",
+                     mdialup_ipv4);
+        } else {
+            ESP_LOGI(TAG, "dial: MDIALUP not up, activating RNDIS bridge...");
+            memset(response, 0, sizeof(response));
+            esp_err_t ret = cell_modem_at_send_collect("AT+MDIALUP=1,1", response, sizeof(response),
+                                                  CELL_MODEM_DIAL_MDIALUP_MS, "+MDIALUP:");
+            if (ret == ESP_OK && cell_modem_parse_mdialup_ipv4(response, mdialup_ipv4, sizeof(mdialup_ipv4))) {
+                ESP_LOGI(TAG, "dial: MDIALUP OK, ipv4=%s (RNDIS bridge activated)",
+                         mdialup_ipv4);
+            } else {
+                /* MDIALUP 激活失败：某些固件 MIPCALL 已涵盖 RNDIS 桥接，
+                 * 此时 MDIALUP 报 CME ERROR 仍可继续；真正无数据面由后续 diag 揭示 */
+                ESP_LOGW(TAG, "dial: MDIALUP activate returned %s (may be covered by MIPCALL)",
+                         esp_err_to_name(ret));
+            }
+        }
+        /* 优先用 MDIALUP 返回的蜂窝 IP（数据面真实地址），回落 MIPCALL IP */
+        if (mdialup_ipv4[0] != '\0') {
+            snprintf(ipv4, sizeof(ipv4), "%s", mdialup_ipv4);
+        }
+    }
+
+    if (mipcall_up || ipv4[0] != '\0') {
         if (info != NULL) {
             snprintf(info->cell_ipv4, sizeof(info->cell_ipv4), "%s", ipv4);
         }
+        ESP_LOGI(TAG, "dial: done, ipv4=%s", ipv4);
         cell_modem_notify_pdp_ready();
         return ESP_OK;
     }
 
-    /* 5.4 MIPCALL=1,1 — 快速主路径（实测 2s 出 URC） */
-    ESP_LOGI(TAG, "dial: MIPCALL? not up, dialing via MIPCALL...");
-    memset(response, 0, sizeof(response));
-    esp_err_t ret = cell_modem_at_send_collect("AT+MIPCALL=1,1", response, sizeof(response),
-                                          CELL_MODEM_DIAL_MIPCALL_MS, "+MIPCALL:");
-    if (ret == ESP_OK && cell_modem_parse_mipcall_ipv4(response, ipv4, sizeof(ipv4))) {
-        ESP_LOGI(TAG, "dial: MIPCALL OK, ipv4=%s", ipv4);
-        if (info != NULL) {
-            snprintf(info->cell_ipv4, sizeof(info->cell_ipv4), "%s", ipv4);
-        }
-        cell_modem_notify_pdp_ready();
-        return ESP_OK;
-    }
-    ESP_LOGW(TAG, "dial: MIPCALL fail, trying MDIALUP");
-
-    /* 5.5 MDIALUP? / MDIALUP=1,1 — 官方 RNDIS 拨号路径（兼容老固件） */
-    if (cell_modem_at_send("AT+MDIALUP?", response, sizeof(response), 10000) == ESP_OK &&
-        cell_modem_parse_mdialup_ipv4(response, ipv4, sizeof(ipv4))) {
-        ESP_LOGI(TAG, "dial: MDIALUP? already up, ipv4=%s", ipv4);
-        if (info != NULL) {
-            snprintf(info->cell_ipv4, sizeof(info->cell_ipv4), "%s", ipv4);
-        }
-        cell_modem_notify_pdp_ready();
-        return ESP_OK;
-    }
-
-    ESP_LOGI(TAG, "dial: MDIALUP? not connected, dialing...");
-    memset(response, 0, sizeof(response));
-    ret = cell_modem_at_send_collect("AT+MDIALUP=1,1", response, sizeof(response),
-                                CELL_MODEM_DIAL_MDIALUP_MS, "+MDIALUP:");
-    if (ret == ESP_OK && cell_modem_parse_mdialup_ipv4(response, ipv4, sizeof(ipv4))) {
-        ESP_LOGI(TAG, "dial: MDIALUP OK, ipv4=%s", ipv4);
-        if (info != NULL) {
-            snprintf(info->cell_ipv4, sizeof(info->cell_ipv4), "%s", ipv4);
-        }
-        cell_modem_notify_pdp_ready();
-        return ESP_OK;
-    }
-
-    ESP_LOGW(TAG, "dial: MDIALUP fail, trying CGATT fallback");
+    ESP_LOGW(TAG, "dial: MIPCALL+MDIALUP both failed, trying CGATT fallback");
 
     /* 5.6 CGATT/CGACT 兜底（信号弱/未驻网时） */
     ipv4[0] = '\0';
-    ret = cell_modem_dial_fallback_cgatt(ipv4, sizeof(ipv4));
+    esp_err_t ret = cell_modem_dial_fallback_cgatt(ipv4, sizeof(ipv4));
     if (ret == ESP_OK) {
         ESP_LOGI(TAG, "dial: fallback OK, ipv4=%s", ipv4);
         if (info != NULL) {
@@ -2503,6 +2526,10 @@ static esp_err_t cell_modem_install_rndis(void)
     netif_base.if_desc = netif_name;
     netif_base.route_prio = (g.config.route_priority > 0)
                         ? g.config.route_priority : CELL_MODEM_ROUTE_PRIORITY;
+    /* RNDIS 蜂窝链路 MTU：USB RNDIS 封装每包加 44B 头，且蜂窝侧 MTU 通常 <1500，
+     * 用默认 1500 会导致大包（TCP 数据段/ICMP/分片）被模组丢弃——表现为
+     * DNS(小UDP)通但 TCP connect/ICMP 失败(errno=113)。统一设 1400 兜底。 */
+    netif_base.mtu = (g.config.mtu > 0) ? g.config.mtu : CELL_MODEM_MTU_DEFAULT;
 
     esp_netif_config_t netif_config = {
         .base = &netif_base,
