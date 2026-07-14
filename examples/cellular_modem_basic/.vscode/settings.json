@@ -10,5 +10,5 @@
     "--compile-commands-dir=${workspaceFolder}/build"
   ],
   "idf.flashType": "UART",
-  "idf.portWin": "COM18"
+  "idf.portWin": "COM11"
 }

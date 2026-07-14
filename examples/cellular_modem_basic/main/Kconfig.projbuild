@@ -1,0 +1,14 @@
+menu "IO Expander Test"
+
+    config RUN_IO_EXPANDER_TEST
+        bool "Run IO Expander driver test (replaces main.c app_main)"
+        default n
+        help
+            When enabled, the project registers io_expander_test.c as the
+            sole SRCS and calls io_expander_test_run() from app_main instead
+            of the original cellular_modem_basic flow.
+
+            Use this to isolate-test the IO Expander driver before
+            integrating it back into the full application.
+
+endmenu
