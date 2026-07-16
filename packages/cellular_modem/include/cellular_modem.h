@@ -40,12 +40,39 @@ typedef struct {
 
 /* ======================== 板级硬件配置（产品注入） ======================== */
 
+/**
+ * @brief 硬件复位回调函数原型（产品注入）
+ *
+ * 当模组复位脚不在直连 GPIO 上（如挂在 I2C IO Expander / PMU / 外部 MCU
+ * 等后面），产品通过本回调把“拉低复位脚→等待→释放”的完整时序实现
+ * 注入组件。组件内部据此触发硬件复位，而无需依赖任何具体产品头文件。
+ *
+ * 约定：本回调须在内部完成完整的复位脉冲时序（拉低→保持→拉高→等待
+ * 模组 boot），调用返回后模组应已退出复位态。组件调用方不再附加延时。
+ *
+ * @return ESP_OK 复位成功；非 OK 视为复位失败（组件会记录但继续重试）
+ */
+typedef esp_err_t (*cell_modem_hardware_reset_fn_t)(void);
+
 typedef struct {
-    int         rst_gpio;              /**< 模组复位 GPIO；-1=无硬件复位 */
+    int         rst_gpio;              /**< 模组复位 GPIO；-1=无直连 GPIO 复位 */
+    /**
+     * 硬件复位回调。优先级高于 rst_gpio：非 NULL 时所有硬复位
+     * （开机早期、monitor 看门狗、RNDIS 恢复、CEREG 超时）都走本回调，
+     * rst_gpio 被忽略。用于复位脚在 I2C IO Expander 等非直连场景。
+     */
+    cell_modem_hardware_reset_fn_t hardware_reset_fn;
     uint32_t    usb_peripheral_map;    /**< USB Host peripheral_map，P4 FS PHY 通常为 BIT1 */
     uint16_t    usb_vid;               /**< USB Vendor ID；0=使用组件内置默认值 */
     uint16_t    usb_pid_rndis;         /**< 纯 RNDIS 模式 PID；0=使用组件内置默认值 */
     uint16_t    usb_pid_composite;     /**< RNDIS+AT 复合模式 PID；0=使用组件内置默认值 */
+    /**
+     * 跳过 cell_modem_init 内的首次硬复位。
+     * true=产品层已在上电流程中完成模组复位（如开机释放 RST），
+     * 组件 init 不再重复复位（避免 USB 枚举中被强制复位导致设备丢失）。
+     * 运行期看门狗 / RNDIS 恢复的复位不受影响（仍走回调或 rst_gpio）。
+     */
+    bool        skip_init_reset;
 } cell_modem_hw_config_t;
 
 /* ======================== 模组行为配置 ======================== */
@@ -77,9 +104,26 @@ typedef void (*cell_modem_status_callback_t)(cell_modem_state_t state);
  * 与以太网 PHY 启动并行，为模组争取 RF/USB 就绪时间。
  * 若已调用本函数，cell_modem_init 内不再重复硬复位。
  *
- * @param rst_gpio 复位引脚；<0 跳过
+ * 复位路径优先级：cell_modem_set_hardware_reset_callback() 注入的回调
+ * > 本函数的 rst_gpio 直驱。两者都没设置时跳过硬复位。
+ *
+ * @param rst_gpio 直连复位引脚；<0 跳过（改用回调）
  */
 esp_err_t cell_modem_early_hardware_reset(int rst_gpio);
+
+/**
+ * @brief 注册硬件复位回调（须在 cell_modem_init / early_hardware_reset 之前调用）
+ *
+ * 用于模组复位脚不在直连 GPIO 的场景（如 I2C IO Expander）。注册后，
+ * 组件所有硬复位路径（开机早期、看门狗、RNDIS 恢复、CEREG 超时）都会
+ * 调用本回调，忽略 cell_modem_hw_config_t.rst_gpio。
+ *
+ * 回调内部须完成完整复位脉冲时序（拉低→保持→释放→等待 boot）。
+ * 传 NULL 取消回调，回退到 rst_gpio 直驱。
+ *
+ * @param fn 复位回调；NULL=取消
+ */
+void cell_modem_set_hardware_reset_callback(cell_modem_hardware_reset_fn_t fn);
 
 /**
  * @brief 初始化蜂窝模组（非阻塞，后台 monitor 完成拨号）

@@ -195,6 +195,10 @@ static uint16_t cell_modem_usb_pid_composite(void)
 
 /** app_main 早期复位已执行时，cell_modem_init 不再重复硬复位 */
 static bool s_early_reset_done = false;
+/** 产品注入的硬件复位回调（用于复位脚在 I2C IO Expander 等非直连场景）。
+ * 非 NULL 时优先于 g.hw.rst_gpio 使用。通过 cell_modem_set_hardware_reset_callback()
+ * 或 cell_modem_hw_config_t.hardware_reset_fn 设置。 */
+static cell_modem_hardware_reset_fn_t s_hardware_reset_fn = NULL;
 /** CEREG 超时后已执行的硬复位次数（pdp_done 成功后清零） */
 static int s_cereg_hw_reset_count = 0;
 
@@ -347,9 +351,28 @@ static void cell_modem_rst_gpio_release(void)
 
 /**
  * modem 硬件复位（monitor 看门狗 / RNDIS 恢复用）
- */
+ *
+ * 复位路径优先级：注入的回调 > g.hw.rst_gpio 直驱。
+ * 回调由产品层提供完整复位脉冲时序（典型：I2C IO Expander 拉低/释放），
+ * 用于复位脚不在直连 GPIO 的场景。 */
 static void cell_modem_hardware_reset(void)
 {
+    /* 优先使用产品注入的复位回调（I2C IO Expander 等非直连场景） */
+    cell_modem_hardware_reset_fn_t fn = s_hardware_reset_fn;
+    if (fn == NULL) {
+        fn = g.hw.hardware_reset_fn;
+    }
+    if (fn != NULL) {
+        esp_err_t ret = fn();
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "Hardware reset callback failed: %s", esp_err_to_name(ret));
+        } else {
+            ESP_LOGI(TAG, "Hardware reset via injected callback (IO Expander/etc)");
+        }
+        return;
+    }
+
+    /* 回退：直连 GPIO 复位 */
     if (g.hw.rst_gpio < 0) {
         ESP_LOGW(TAG, "No modem RST GPIO configured, skip hardware reset");
         return;
@@ -360,12 +383,31 @@ static void cell_modem_hardware_reset(void)
 
 esp_err_t cell_modem_early_hardware_reset(int rst_gpio)
 {
+    /* 回调优先于 rst_gpio：early reset 发生在 cell_modem_init 之前，
+     * g.hw 尚未赋值，因此只看 s_hardware_reset_fn（由 setter 提前注入）。 */
+    if (s_hardware_reset_fn != NULL) {
+        esp_err_t ret = s_hardware_reset_fn();
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "Early hardware reset callback failed: %s", esp_err_to_name(ret));
+            return ret;
+        }
+        s_early_reset_done = true;
+        ESP_LOGI(TAG, "Early hardware reset via injected callback");
+        return ESP_OK;
+    }
+
     if (rst_gpio < 0) {
         return ESP_OK;
     }
     cell_modem_pulse_reset_gpio(rst_gpio);
     s_early_reset_done = true;
     return ESP_OK;
+}
+
+void cell_modem_set_hardware_reset_callback(cell_modem_hardware_reset_fn_t fn)
+{
+    s_hardware_reset_fn = fn;
+    ESP_LOGI(TAG, "Hardware reset callback %s", fn ? "registered" : "cleared");
 }
 
 /* ================================================================
@@ -2664,10 +2706,14 @@ esp_err_t cell_modem_init(const cell_modem_hw_config_t *hw, const cell_modem_con
         return ret;
     }
 
-    /* 硬复位：优先使用 app_main 早期复位；否则 init 内复位（RNDIS 已安装） */
+    /* 硬复位：优先使用 app_main 早期复位；否则 init 内复位（RNDIS 已安装）。
+     * skip_init_reset：产品层已在上电流程复位过模组时跳过（避免 USB 枚举中被
+     * 强制复位），但运行期看门狗 / RNDIS 恢复仍可正常复位（走回调或 rst_gpio）。 */
     if (s_early_reset_done) {
         cell_modem_rst_gpio_release();
         ESP_LOGI(TAG, "skip init reset (early reset at boot)");
+    } else if (g.hw.skip_init_reset) {
+        ESP_LOGI(TAG, "skip init reset (product already reset modem at boot)");
     } else {
         cell_modem_hardware_reset();
     }
